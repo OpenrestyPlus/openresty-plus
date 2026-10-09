@@ -1,31 +1,48 @@
 # OpenResty Plus
 
-OpenResty Plus 是由 Go 控制面和 Vue 管理控制台组成的 OpenResty 集群管理平台。本仓库将原先独立维护的后端与前端项目放在同一仓库中，两个项目仍保留各自的依赖、构建和部署配置。
+OpenResty Plus 是 OpenResty 集群管理平台。后端和前端源码分别保存在 `orp-backend/` 与 `orp-frontend/`，发布时先编译 Vue 管理界面，再将静态资源嵌入 Go 程序，最终交付一个同时提供管理界面和 API 的可执行文件。
 
-## 项目结构
+## 构建单文件程序
 
-```text
-.
-├── orp-backend/    # Go 控制面、数据库迁移、Compose 部署及后端文档
-└── orp-frontend/   # Vue 3 管理控制台、pnpm workspace 及前端文档
-```
-
-## 快速开始
-
-### 启动后端
-
-后端要求 Go 1.26.1。单独运行、环境变量和数据库初始化说明见 [`orp-backend/PROJECT.md`](orp-backend/PROJECT.md)。使用本地 Compose 启动控制面及依赖服务：
+构建环境要求：Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。首次构建会自动安装前端依赖；完成后运行：
 
 ```sh
-cd orp-backend
-docker compose up -d
+./build.sh
 ```
 
-完整部署说明和本地三节点配置见 [`orp-backend/deploy/README.md`](orp-backend/deploy/README.md)。
+生成的程序位于 `dist/openresty-plus`。发布时只需复制这个可执行文件和配置文件；前端页面已嵌入程序，无需单独部署静态文件。
+默认生成当前操作系统和 CPU 架构的程序。为 Linux x86-64 服务器构建时使用 `GOOS=linux GOARCH=amd64 ./build.sh`；ARM64 Linux 可使用 `GOOS=linux GOARCH=arm64 ./build.sh`。
 
-### 启动前端
+## 配置及启动
 
-前端要求 Node.js 22.18+ 或 24.12+，以及仓库指定的 pnpm 11.16.0。在仓库根目录执行：
+在仓库根目录创建本地配置并填写数据库、管理员密码和数据加密密钥：
+
+```sh
+cp .env.example .env
+```
+
+程序启动时会自动读取当前目录的 `.env`。MySQL 是必需的外部服务；Redis 和 Kafka 不可用时，控制面仍可启动，但相关缓存或日志能力会降级。可用仓库中的 Compose 启动本地依赖：
+
+```sh
+docker compose --env-file .env -f orp-backend/docker-compose.yaml --project-directory orp-backend up -d mysql redis kafka
+```
+
+使用同一个可执行文件管理服务：
+
+```sh
+./dist/openresty-plus start       # 后台启动
+./dist/openresty-plus status      # 查看状态
+./dist/openresty-plus logs -f     # 实时查看日志
+./dist/openresty-plus restart     # 重启
+./dist/openresty-plus stop        # 优雅停止
+./dist/openresty-plus version     # 查看版本
+```
+
+默认监听 `:8081`，打开 <http://127.0.0.1:8081> 访问管理界面。前台运行可使用 `./dist/openresty-plus run`，适合由 systemd、容器等进程管理器托管。PID 文件和日志默认写入仓库根目录的 `runtime/`；设置 `OPENRESTY_STATE_DIR` 可指定其他目录。
+
+## 源码开发
+
+单独启动前端开发服务器：
 
 ```sh
 cd orp-frontend
@@ -33,23 +50,14 @@ pnpm install --frozen-lockfile
 pnpm --filter @vben/web-antd dev
 ```
 
-前端环境配置、构建及其他应用说明见 [`orp-frontend/PROJECT.md`](orp-frontend/PROJECT.md)。
+后端单独启动、环境变量和数据库迁移说明见 [`orp-backend/PROJECT.md`](orp-backend/PROJECT.md)。本地多节点 Compose 部署和其他平台文档见 [`orp-backend/deploy/README.md`](orp-backend/deploy/README.md) 与 [`orp-backend/docs/`](orp-backend/docs/)；前端文档见 [`orp-frontend/PROJECT.md`](orp-frontend/PROJECT.md)。
 
-## 联合开发
+## 项目结构与许可
 
-后端 `dev.sh` 可用于本地多服务联调。请先查看 [`orp-backend/PROJECT.md`](orp-backend/PROJECT.md) 和脚本说明，准备所需环境配置后，从 `orp-backend/` 目录运行：
-
-```sh
-cd orp-backend
-./dev.sh
+```text
+.
+├── orp-backend/    # Go 控制面及部署文件
+└── orp-frontend/   # Vue 管理控制台和 pnpm 工作区
 ```
 
-该脚本会从仓库根目录读取 `.env`，启动本地 MySQL、Redis、Kafka 及控制面，并启动 `orp-frontend/` 中的 Vite。首次启动前，请在仓库根目录执行 `cp .env.example .env` 并填写配置。仓库根目录的 `.env.example` 提供联调配置模板，后端服务变量说明见 `orp-backend/.env.example`。还需安装 Docker Compose、Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。无需完整联调时，可按上面的步骤分别启动后端和前端。
-
-## 文档与许可
-
-- 后端能力与限制：[`orp-backend/README.md`](orp-backend/README.md)
-- 前端项目说明：[`orp-frontend/README.md`](orp-frontend/README.md)
-- 后端架构、部署与功能文档：[`orp-backend/docs/`](orp-backend/docs/)
-- 前端工作区文档：[`orp-frontend/README.zh-CN.md`](orp-frontend/README.zh-CN.md)
-- 仓库许可证：[`LICENSE`](LICENSE)
+仓库许可证见 [`LICENSE`](LICENSE)。

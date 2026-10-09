@@ -14,3 +14,4 @@ dist/
 **/dist/
 coverage/
 **/coverage/
+/orp-backend/internal/webui/static/dist/

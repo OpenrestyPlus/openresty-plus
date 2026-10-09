@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/redis/go-redis/v9"
+	"net.daoke/orp-backend/internal/webui"
 )
 
 // New builds the control-plane HTTP surface. Store-backed API modules are
@@ -192,6 +193,7 @@ func NewMuxWithRedis(database *sql.DB, redisClient *redis.Client) *http.ServeMux
 	mux.HandleFunc("POST /api/centers/{centerID}/runtime-configurations", server.publishRuntimeConfiguration)
 	mux.HandleFunc("GET /api/centers/{centerID}/control-api-reloads", server.listReloadTasks)
 	mux.HandleFunc("GET /api/centers/{centerID}/control-api-reloads/paged", server.pageReloadTasks)
+	mux.Handle("/", webui.Handler())
 	return mux
 }
 

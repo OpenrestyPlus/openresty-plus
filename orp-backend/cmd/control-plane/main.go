@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,38 +19,55 @@ import (
 	"net.daoke/orp-backend/internal/store"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 func main() {
+	if err := runCLI(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "openresty-plus:", err)
+		os.Exit(1)
+	}
+}
+
+func runServer() error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	configuration, err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	database, err := store.Open(configuration.MySQLDSN)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer database.Close()
 	if err := store.Migrate(database); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := store.SeedAdmin(database); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := store.ImportLegacyCenters(database); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := store.SeedSettingGroups(database); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := httpapi.RecoverPendingPublishes(database); err != nil {
-		log.Fatal(err)
+		return err
 	}
-	httpapi.StartNodeSampler(context.Background(), database)
-	httpapi.StartTLSExpiryAlertScheduler(context.Background(), database)
+
+	httpapi.StartNodeSampler(ctx, database)
+	httpapi.StartTLSExpiryAlertScheduler(ctx, database)
+
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: configuration.RedisAddress, Password: configuration.RedisPassword, DB: configuration.RedisDB,
 		DialTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 2 * time.Second,
 	})
-	redisCtx, cancelRedis := context.WithTimeout(context.Background(), 2*time.Second)
+	redisCtx, cancelRedis := context.WithTimeout(ctx, 2*time.Second)
 	redisErr := redisClient.Ping(redisCtx).Err()
 	cancelRedis()
 	if redisErr != nil {
@@ -56,27 +77,70 @@ func main() {
 	} else {
 		defer redisClient.Close()
 	}
-	httpapi.StartKafkaLogConsumer(context.Background(), database, httpapi.KafkaLogConfig{
+	httpapi.StartKafkaLogConsumer(ctx, database, httpapi.KafkaLogConfig{
 		Brokers: configuration.KafkaBrokers,
 		Topic:   configuration.KafkaTopic,
 		GroupID: configuration.KafkaConsumerID,
 	})
-	server := &http.Server{Addr: configuration.HTTPAddress, Handler: httpapi.NewWithRedis(database, redisClient)}
-	log.Printf("openresty-plus Go control plane listening on %s", configuration.HTTPAddress)
+
+	server := &http.Server{
+		Addr: configuration.HTTPAddress, Handler: httpapi.NewWithRedis(database, redisClient),
+		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
+	}
+	var agentServer *http.Server
 	if configuration.AgentHTTPSAddress != "" {
 		caPEM, err := os.ReadFile(configuration.AgentClientCAFile)
 		if err != nil {
-			log.Fatalf("read Agent client CA: %v", err)
+			return fmt.Errorf("read Agent client CA: %w", err)
 		}
 		clientCAs := x509.NewCertPool()
 		if !clientCAs.AppendCertsFromPEM(caPEM) {
-			log.Fatal("Agent client CA contains no certificates")
+			return errors.New("Agent client CA contains no certificates")
 		}
-		agentServer := &http.Server{Addr: configuration.AgentHTTPSAddress, Handler: httpapi.NewAgentMux(database), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCAs}}
+		agentServer = &http.Server{
+			Addr: configuration.AgentHTTPSAddress, Handler: httpapi.NewAgentMux(database),
+			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+			WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
+			TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCAs},
+		}
+	}
+
+	serverErrors := make(chan error, 2)
+	go func() {
+		log.Printf("openresty-plus listening on %s", configuration.HTTPAddress)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- fmt.Errorf("HTTP listener: %w", err)
+		}
+	}()
+	if agentServer != nil {
 		go func() {
 			log.Printf("openresty-plus Agent mTLS listener on %s", configuration.AgentHTTPSAddress)
-			log.Fatal(agentServer.ListenAndServeTLS(configuration.TLSCertFile, configuration.TLSKeyFile))
+			if err := agentServer.ListenAndServeTLS(configuration.TLSCertFile, configuration.TLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- fmt.Errorf("Agent HTTPS listener: %w", err)
+			}
 		}()
 	}
-	log.Fatal(server.ListenAndServe())
+
+	select {
+	case err := <-serverErrors:
+		cancel()
+		return shutdownServers(server, agentServer, err)
+	case <-ctx.Done():
+		return shutdownServers(server, agentServer, nil)
+	}
+}
+
+func shutdownServers(server, agentServer *http.Server, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var shutdownErr error
+	if err := server.Shutdown(ctx); err != nil {
+		shutdownErr = errors.Join(shutdownErr, fmt.Errorf("shutdown HTTP listener: %w", err))
+	}
+	if agentServer != nil {
+		if err := agentServer.Shutdown(ctx); err != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("shutdown Agent listener: %w", err))
+		}
+	}
+	return errors.Join(cause, shutdownErr)
 }
