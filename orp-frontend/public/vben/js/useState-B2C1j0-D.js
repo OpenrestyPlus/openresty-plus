@@ -1,0 +1,1 @@
+import{gr as e}from"../jse/index-index-4D6gZF6U.js";function t(t){let n=e(typeof t==`function`?t():t);function r(e){n.value=e}return[n,r]}export{t};

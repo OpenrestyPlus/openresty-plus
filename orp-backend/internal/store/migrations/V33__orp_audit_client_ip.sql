@@ -1,0 +1,1 @@
+ALTER TABLE orp_audit ADD COLUMN client_ip VARCHAR(45) NOT NULL DEFAULT '';

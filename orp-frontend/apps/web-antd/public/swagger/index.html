@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenrestyPlus · API 文档</title>
+  <link rel="stylesheet" href="swagger-ui.css">
+  <style>
+    html { background: #fff; }
+    .topbar { display: none; }
+    #swagger-ui .information-container { padding: 16px 0 4px; }
+    .swagger-ui .scheme-container { box-shadow: none; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = function () {
+      window.ui = SwaggerUIBundle({
+        url: 'openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        docExpansion: 'list',
+        defaultModelsExpandDepth: 1,
+        tryItOutEnabled: true,
+        persistAuthorization: true,
+        syntaxHighlight: { activated: true, theme: 'agate' },
+      });
+    };
+  </script>
+</body>
+</html>

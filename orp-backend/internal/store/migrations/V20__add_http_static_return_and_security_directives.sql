@@ -1,0 +1,22 @@
+CREATE TABLE http_configuration (
+  center_id BINARY(16) NOT NULL PRIMARY KEY,
+  root_path VARCHAR(512) NULL,
+  hide_version BOOLEAN NOT NULL DEFAULT TRUE,
+  response_headers JSON NOT NULL DEFAULT (JSON_ARRAY())
+);
+
+ALTER TABLE http_server
+  ADD COLUMN root_path VARCHAR(512) NULL,
+  ADD COLUMN hide_version BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN response_headers JSON NOT NULL DEFAULT (JSON_ARRAY());
+
+ALTER TABLE http_location
+  MODIFY COLUMN upstream_id BINARY(16) NULL,
+  ADD COLUMN action VARCHAR(16) NOT NULL DEFAULT 'PROXY',
+  ADD COLUMN root_path VARCHAR(512) NULL,
+  ADD COLUMN alias_path VARCHAR(512) NULL,
+  ADD COLUMN return_status INT NULL,
+  ADD COLUMN return_body TEXT NULL,
+  ADD COLUMN return_content_type_mode VARCHAR(16) NOT NULL DEFAULT 'CUSTOM',
+  ADD COLUMN return_content_type VARCHAR(255) NULL,
+  ADD COLUMN response_headers JSON NOT NULL DEFAULT (JSON_ARRAY());

@@ -1,0 +1,9 @@
+@import '@vben/tailwind-config/theme';
+
+/* 图标可见性兜底：
+   部分 iconify 图标（如 fluent-mdl2 系列）的 path 未声明 fill，
+   SVG 默认 fill=black，在暗色背景上会"黑on黑"不可见。
+   强制未声明 fill 的 iconify path 继承 currentColor，保证与文字同色。 */
+svg.iconify :where(path, circle, rect, g):not([fill]):not([stroke]) {
+  fill: currentColor;
+}

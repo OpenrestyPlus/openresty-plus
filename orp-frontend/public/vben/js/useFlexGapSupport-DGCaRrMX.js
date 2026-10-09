@@ -1,0 +1,1 @@
+import{Vn as e,yr as t}from"../jse/index-index-4D6gZF6U.js";import{n}from"./styleChecker-C-QyBwUg.js";var r=(()=>{let r=t(!1);return e(()=>{r.value=n()}),r});export{r as t};

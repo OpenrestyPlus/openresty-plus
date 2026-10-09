@@ -1,0 +1,1 @@
+ALTER TABLE nginx_node MODIFY COLUMN protocol VARCHAR(32) NULL;

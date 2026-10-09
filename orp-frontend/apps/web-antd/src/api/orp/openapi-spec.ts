@@ -1,0 +1,1665 @@
+/**
+ * OpenrestyPlus OpenAPI 3.0 规范。
+ *
+ * 描述 Go 控制面已注册的 /api 路由；错误约定：code=0 成功 / code=-1 失败（message 携带原因）。
+ * 供接口文档页面（ApiDocsPage）浏览、搜索、下载 openapi.json 与复制 JSON，
+ * 便于交给其他智能体直接生成对应后端服务。
+ */
+
+const ok = (dataRef: string) => ({
+  description: '成功（code=0）',
+  content: {
+    'application/json': {
+      schema: {
+        type: 'object',
+        properties: {
+          code: { type: 'integer', example: 0 },
+          message: { type: 'string', example: 'ok' },
+          data: { $ref: dataRef },
+        },
+        required: ['code', 'message', 'data'],
+      },
+    },
+  },
+});
+
+const bad = (message: string, status = 400) => ({
+  description: `失败（code=-1，${status}）`,
+  content: {
+    'application/json': {
+      schema: { $ref: '#/components/schemas/ApiResponseError' },
+      example: { code: -1, message, data: null },
+    },
+  },
+});
+
+const idParam = {
+  name: 'id',
+  in: 'path',
+  required: true,
+  description: '资源 ID',
+  schema: { type: 'integer', minimum: 1 },
+};
+
+const pageParams = [
+  { name: 'page', in: 'query', schema: { type: 'integer', default: 1, minimum: 1 }, description: '页码（从 1 开始）' },
+  { name: 'pageSize', in: 'query', schema: { type: 'integer', default: 10, minimum: 1, maximum: 100 }, description: '每页条数' },
+];
+
+const jsonBody = (ref: string, example: Record<string, unknown>) => ({
+  required: true,
+  content: {
+    'application/json': {
+      schema: { $ref: ref },
+      example,
+    },
+  },
+});
+
+export const openApiSpec = {
+  openapi: '3.0.3',
+  info: {
+    title: 'OpenrestyPlus 配置管理平台 API',
+    description: [
+      '面向多中心 OpenResty / Nginx 集群的配置与资源管理接口。',
+      '',
+      '**通用约定**',
+      '- 响应统一包装：`{ code, message, data }`；`code=0` 表示成功，`code=-1` 表示失败（`message` 携带失败原因）',
+      '- 鉴权：除登录外所有接口需携带 `Authorization: Bearer <token>`',
+      '- 列表接口统一支持 `page` / `pageSize` 分页参数，返回 `PageResult` 结构',
+      '- 时间格式：`YYYY-MM-DD HH:mm:ss`（如 `2026-09-28 10:20:00`）',
+      '',
+      '**业务规则**',
+      '- 中心：存在任一关联资源（节点/HTTP/Stream/DNS/证书）时禁止删除',
+      '- 节点：运行中（running）状态不可直接删除，需先暂停或停止；本地 Docker 节点状态操作会实际启动、暂停或停止容器',
+      '- 发布：本地 Docker east-1/east-2/east-3 支持节点内语法校验、原子切换、reload、版本探针与回滚；生产 SSH 通道尚未配置',
+      '- 指标：本地访问日志和节点探测为数据源；配置 OPENRESTY_GEOIP_DB_PATH 与中心经纬度后提供真实来源聚合',
+      '- HTTP 监听：同中心同端口唯一；关联证书的适用中心范围必须包含该监听所属中心',
+      '- Stream 服务：同中心同协议同端口唯一',
+      '- 证书：列表接口不下发 privateKey，明文仅通过 detail 接口获取；被 HTTP 监听引用时禁止删除',
+      '- 审计：所有写操作（新增/更新/删除/下线）自动记录审计日志',
+    ].join('\n'),
+    version: '1.0.0',
+  },
+  servers: [{ url: '/api', description: '当前站点的 Go 控制面（由前端开发服务器代理）' }],
+  tags: [
+    { name: 'centers', description: '中心管理：以中心为配置边界组织资源' },
+    { name: 'nodes', description: '节点实例：OpenResty/Nginx 节点注册与状态管理' },
+    { name: 'http', description: 'HTTP 流量：域名 + 端口监听与 Location 路由规则' },
+    { name: 'stream', description: 'Stream 流量：四层 TCP/UDP 服务代理' },
+    { name: 'tls', description: 'TLS 证书：证书录入、范围管理与引用约束' },
+    { name: 'dns', description: 'DNS 解析器：上游 DNS 配置' },
+    { name: 'ip-group', description: 'IP 组：常用 IP / CIDR 网段分组，供三层级 IP 策略导入复用' },
+    { name: 'upstream', description: '上游服务器组：负载均衡、后端节点与健康检查' },
+    { name: 'dashboard', description: '控制面大盘：网关运维统计报表（指标/趋势/排行）' },
+    { name: 'audit', description: '审计日志：全量操作留痕与检索' },
+    { name: 'logs', description: '日志检索：读取节点、HTTP 与 Stream 本地日志' },
+    { name: 'settings', description: '系统配置：配置项与配置分组管理' },
+    { name: 'rbac', description: '系统与权限：用户/角色/权限树（企业级 RBAC）' },
+    { name: 'publish', description: '配置下发：预检、策略下发、分批进度与金丝雀控制' },
+    { name: 'alerts', description: '告警通知：Webhook / 飞书通道与 TLS 证书到期提醒' },
+    { name: 'agent', description: '节点 Agent：仅在独立 mTLS listener 上提供心跳和固定操作任务' },
+  ],
+  paths: {
+    '/orp/geoip-database': {
+      get: {
+        tags: ['dashboard'],
+        summary: '查询当前 GeoIP City 数据库状态',
+        operationId: 'getGeoIPDatabase',
+        responses: { '200': ok('#/components/schemas/GeoIPDatabaseInfo'), '401': bad('登录状态已失效', 401) },
+      },
+    },
+    '/orp/geoip-database/import': {
+      post: {
+        tags: ['dashboard'],
+        summary: '导入或替换 GeoIP City .mmdb 数据库',
+        operationId: 'importGeoIPDatabase',
+        requestBody: {
+          required: true,
+          content: { 'multipart/form-data': { schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } }, required: ['file'] } } },
+        },
+        responses: {
+          '200': ok('#/components/schemas/GeoIPDatabaseInfo'),
+          '400': bad('文件无效、不是 City 数据库或超过大小限制'),
+          '401': bad('登录状态已失效', 401),
+          '403': bad('当前角色无写入权限', 403),
+        },
+      },
+    },
+    '/orp/rbac/users': {
+      get: {
+        tags: ['rbac'],
+        summary: '分页查询用户（支持 keyword/roleId/status 筛选）',
+        operationId: 'listRbacUsers',
+        parameters: [
+          { name: 'page', in: 'query', schema: { type: 'integer' } },
+          { name: 'pageSize', in: 'query', schema: { type: 'integer' } },
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '用户名/姓名/邮箱/手机号' },
+          { name: 'roleId', in: 'query', schema: { type: 'integer' } },
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['enabled', 'disabled'] } },
+        ],
+        responses: { '200': { description: 'PageResult<RbacUserItem>' } },
+      },
+      post: {
+        tags: ['rbac'],
+        summary: '新增用户',
+        operationId: 'createRbacUser',
+        requestBody: {
+          content: { 'application/json': { schema: { type: 'object' } } },
+          description: 'username/realName/roleIds/status/password/email/phone',
+        },
+        responses: { '200': { description: 'RbacUserItem' } },
+      },
+    },
+    '/orp/rbac/users/{id}': {
+      put: {
+        tags: ['rbac'],
+        summary: '编辑用户（含角色绑定与状态）',
+        operationId: 'updateRbacUser',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'RbacUserItem' } },
+      },
+      delete: {
+        tags: ['rbac'],
+        summary: '删除用户（自身账号受保护）',
+        operationId: 'deleteRbacUser',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: '成功' } },
+      },
+    },
+    '/orp/rbac/users/{id}/reset-password': {
+      post: {
+        tags: ['rbac'],
+        summary: '重置用户密码为初始密码',
+        operationId: 'resetRbacUserPassword',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: '{ resetTo, username }' } },
+      },
+    },
+    '/orp/rbac/roles': {
+      get: {
+        tags: ['rbac'],
+        summary: '分页查询角色（含 userCount）',
+        operationId: 'listRbacRoles',
+        parameters: [
+          { name: 'page', in: 'query', schema: { type: 'integer' } },
+          { name: 'pageSize', in: 'query', schema: { type: 'integer' } },
+          { name: 'keyword', in: 'query', schema: { type: 'string' } },
+          { name: 'status', in: 'query', schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'PageResult<RbacRoleItem>' } },
+      },
+      post: {
+        tags: ['rbac'],
+        summary: '新增角色',
+        operationId: 'createRbacRole',
+        requestBody: {
+          content: { 'application/json': { schema: { type: 'object' } } },
+          description: 'code/name/description/status',
+        },
+        responses: { '200': { description: 'RbacRoleItem' } },
+      },
+    },
+    '/orp/rbac/roles/{id}': {
+      put: {
+        tags: ['rbac'],
+        summary: '编辑角色（内置角色仅可改描述/名称）',
+        operationId: 'updateRbacRole',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'RbacRoleItem' } },
+      },
+      delete: {
+        tags: ['rbac'],
+        summary: '删除角色（内置/绑定用户时禁止）',
+        operationId: 'deleteRbacRole',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: '成功' } },
+      },
+    },
+    '/orp/rbac/permissions': {
+      get: {
+        tags: ['rbac'],
+        summary: '权限定义树（菜单 + 操作点）',
+        operationId: 'listRbacPermissions',
+        responses: { '200': { description: 'RbacPermissionNode[]' } },
+      },
+    },
+    '/orp/rbac/roles/{id}/permissions': {
+      get: {
+        tags: ['rbac'],
+        summary: '读取角色权限集合',
+        operationId: 'getRbacRolePermissions',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: '{ permissionKeys }' } },
+      },
+      put: {
+        tags: ['rbac'],
+        summary: '保存角色权限分配',
+        operationId: 'assignRbacRolePermissions',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          content: { 'application/json': { schema: { type: 'object' } } },
+          description: 'permissionKeys: string[]',
+        },
+        responses: { '200': { description: '{ permissionKeys }' } },
+      },
+    },
+    '/orp/publish': {
+      post: {
+        tags: ['publish'],
+        summary: '发起配置下发（可选策略：全量/权重分批+金丝雀观察）',
+        operationId: 'createPublish',
+        requestBody: {
+          content: { 'application/json': { schema: { type: 'object' } } },
+          description: 'nodeIds: number[]；strategy: { mode: all|weighted, batchCount: 1-5, canary: { enabled, waitSeconds: 10|30|60|300 } }',
+        },
+        responses: { '200': { description: '{ batchId, total }' } },
+      },
+    },
+    '/orp/publish/batches/{id}': {
+      get: {
+        tags: ['publish'],
+        summary: '查询下发批次实时进度（含 batchGroups/canary 倒计时）',
+        operationId: 'getPublishBatch',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'PublishBatch' } },
+      },
+    },
+    '/orp/publish/batches/{id}/abort': {
+      post: {
+        tags: ['publish'],
+        summary: '中止下发（金丝雀观察期内取消后续批次）',
+        operationId: 'abortPublishBatch',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: '{ id, phase, abortedCount }' } },
+      },
+    },
+    '/orp/publish/batches/{id}/advance': {
+      post: {
+        tags: ['publish'],
+        summary: '立即推进（跳过金丝雀观察等待期）',
+        operationId: 'advancePublishBatch',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: '{ id, phase }' } },
+      },
+    },
+    '/orp/centers': {
+      get: {
+        tags: ['centers'],
+        summary: '分页查询中心列表',
+        operationId: 'listCenters',
+        parameters: [
+          ...pageParams,
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '关键字（匹配中心名称或标识，不区分大小写）' },
+        ],
+        responses: { '200': ok('#/components/schemas/CenterPage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['centers'],
+        summary: '创建中心',
+        operationId: 'createCenter',
+        requestBody: jsonBody('#/components/schemas/CenterPayload', {
+          name: '华东生产中心',
+          code: 'cn-east-1',
+          description: '承载核心 API 网关与静态资源分发',
+        }),
+        responses: {
+          '200': ok('#/components/schemas/Center'),
+          '400': bad('参数校验失败：中心名称不能为空'),
+          '409': bad('中心标识 cn-east-1 已存在', 409),
+        },
+      },
+    },
+    '/orp/centers/{id}': {
+      put: {
+        tags: ['centers'],
+        summary: '更新中心',
+        operationId: 'updateCenter',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/CenterPayload', {
+          name: '华东生产中心',
+          code: 'cn-east-1',
+          description: '更新后的描述',
+        }),
+        responses: {
+          '200': ok('#/components/schemas/Center'),
+          '404': bad('中心不存在或已被删除', 404),
+          '409': bad('中心标识 cn-east-1 已存在', 409),
+        },
+      },
+      delete: {
+        tags: ['centers'],
+        summary: '删除中心',
+        description: '存在任一关联资源（节点/HTTP/Stream/DNS/证书）时返回 409 拒绝删除。',
+        operationId: 'deleteCenter',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('中心不存在或已被删除', 404),
+          '409': bad('中心下仍有关联资源，请先清空后重试', 409),
+        },
+      },
+    },
+    '/orp/nodes': {
+      get: {
+        tags: ['nodes'],
+        summary: '分页查询节点列表',
+        operationId: 'listNodes',
+        parameters: [
+          ...pageParams,
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤' },
+          { name: 'status', in: 'query', schema: { $ref: '#/components/schemas/NodeStatus' }, description: '按状态过滤' },
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '关键字（匹配节点名称或主机地址）' },
+        ],
+        responses: { '200': ok('#/components/schemas/NodePage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['nodes'],
+        summary: '注册节点',
+        operationId: 'createNode',
+        requestBody: jsonBody('#/components/schemas/NodePayload', {
+          name: 'or-sh-ngx-05',
+          centerId: 1,
+          host: '10.60.1.15',
+          controlEndpoint: 'http://10.60.1.15:8081/control',
+          osInfo: 'Ubuntu 22.04 / OpenResty 1.25.3',
+          activeVersion: 'v2.4.1',
+          status: 'stopped',
+        }),
+        responses: {
+          '200': ok('#/components/schemas/Node'),
+          '404': bad('所属中心不存在', 404),
+          '409': bad('主机地址 10.60.1.15 已被其他节点占用', 409),
+        },
+      },
+    },
+    '/orp/nodes/{id}': {
+      put: {
+        tags: ['nodes'],
+        summary: '更新节点',
+        operationId: 'updateNode',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/NodePayload', {
+          name: 'or-sh-ngx-05',
+          centerId: 1,
+          host: '10.60.1.15',
+          status: 'maintenance',
+        }),
+        responses: {
+          '200': ok('#/components/schemas/Node'),
+          '404': bad('节点不存在或已被删除', 404),
+          '409': bad('主机地址已被其他节点占用', 409),
+        },
+      },
+      delete: {
+        tags: ['nodes'],
+        summary: '删除节点',
+        description: '运行中（running）节点不可直接删除，返回 409 提示先暂停或停止节点。',
+        operationId: 'deleteNode',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('节点不存在或已被删除', 404),
+          '409': bad('运行中节点不可直接删除，请先暂停或停止节点', 409),
+        },
+      },
+    },
+    '/orp/nodes/{id}/status': {
+      put: {
+        tags: ['nodes'],
+        summary: '修改节点运行状态',
+        description:
+          '本地 Docker 节点实际执行容器启动 / 暂停 / 停止并核对状态；maintenance 暂停容器，running 恢复健康检查，操作后记录审计。',
+        operationId: 'updateNodeStatus',
+        parameters: [idParam],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['status'],
+                properties: {
+                  status: { $ref: '#/components/schemas/NodeStatus' },
+                },
+              },
+              example: { status: 'maintenance' },
+            },
+          },
+        },
+        responses: {
+          '200': ok('#/components/schemas/Node'),
+          '400': bad('目标状态不合法：仅支持 running/paused/stopped/maintenance', 400),
+          '404': bad('节点不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/nodes/{id}/agent/certificate': {
+      put: {
+        tags: ['nodes'], summary: '登记或撤销节点 Agent 客户端证书', operationId: 'registerNodeAgentCertificate', parameters: [idParam],
+        description: '仅超级管理员。登记 Agent ID 和客户端叶证书 SHA-256 指纹；发送 revoke=true 可撤销当前指纹并使未完成任务失效。证书签发由运维侧完成。',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['nodeId'], properties: { nodeId: { type: 'string' }, certificateFingerprint: { type: 'string', pattern: '^[a-fA-F0-9]{64}$' }, revoke: { type: 'boolean' } } }, example: { nodeId: 'edge-sh-01', certificateFingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' } } } },
+        responses: { '200': { description: '证书绑定状态' }, '403': bad('仅超级管理员可登记证书', 403), '409': bad('Agent ID 或证书指纹冲突', 409) },
+      },
+    },
+    '/orp/nodes/{id}/agent/reload': {
+      post: { tags: ['nodes'], summary: '向在线 Agent 节点派发固定 reload', operationId: 'queueNodeAgentReload', parameters: [idParam], description: '仅超级管理员；只允许固定 reload 操作，任务有效期两分钟。', responses: { '201': { description: '已排队任务 ID' }, '409': bad('Agent 未登记、离线或已有未完成任务', 409) } },
+    },
+    '/orp/nodes/{id}/agent/tasks': {
+      get: { tags: ['nodes'], summary: '查询节点 Agent 最近任务', operationId: 'listNodeAgentTasks', parameters: [idParam], description: '仅超级管理员；最多返回最近 50 个任务及结果。', responses: { '200': { description: 'Agent 任务列表' }, '403': bad('仅超级管理员可查询 Agent 任务', 403) } },
+    },
+    '/orp/nodes/{id}/metrics': {
+      get: {
+        tags: ['nodes'],
+        summary: '查询节点运行指标',
+        description: '从 Docker stats、NGINX 状态探针和本地访问日志计算 CPU、内存、连接数、QPS、带宽与请求量。',
+        operationId: 'getNodeMetrics',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NodeMetricsWrap'),
+          '404': bad('节点不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/http-listeners': {
+      get: {
+        tags: ['http'],
+        summary: '分页查询 HTTP 监听列表',
+        operationId: 'listHttpListeners',
+        parameters: [
+          ...pageParams,
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤' },
+          { name: 'domain', in: 'query', schema: { type: 'string' }, description: '域名关键字（模糊匹配）' },
+        ],
+        responses: { '200': ok('#/components/schemas/HttpListenerPage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['http'],
+        summary: '创建 HTTP 监听',
+        operationId: 'createHttpListener',
+        requestBody: jsonBody('#/components/schemas/HttpListenerPayload', {
+          centerId: 1,
+          domain: 'api2.example.cn',
+          port: 8443,
+          tlsCertId: 1,
+          routes: [{ path: '/v1/*', upstream: 'http://svc-api-v1:8080', proxyTimeoutMs: 30000 }],
+        }),
+        responses: {
+          '200': ok('#/components/schemas/HttpListener'),
+          '404': bad('关联的 TLS 证书不存在', 404),
+          '409': bad('端口冲突：同中心已存在该端口的监听', 409),
+        },
+      },
+    },
+    '/orp/http-listeners/{id}': {
+      put: {
+        tags: ['http'],
+        summary: '更新 HTTP 监听',
+        description: '整体替换式更新（含 Location 路由规则全量重写）。',
+        operationId: 'updateHttpListener',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/HttpListenerPayload', {
+          centerId: 1,
+          domain: 'api.example.cn',
+          port: 8443,
+          tlsCertId: 2,
+          routes: [
+            { id: 101, path: '/v2/*', upstream: 'http://svc-api-v2:8080', proxyTimeoutMs: 30000 },
+            { path: '/v4/*', upstream: 'http://svc-api-v4:8080', proxyTimeoutMs: 60000 },
+          ],
+        }),
+        responses: {
+          '200': ok('#/components/schemas/HttpListener'),
+          '404': bad('HTTP 监听不存在或已被删除', 404),
+          '409': bad('端口冲突：中心内已存在该端口的监听', 409),
+        },
+      },
+      delete: {
+        tags: ['http'],
+        summary: '删除 HTTP 监听',
+        operationId: 'deleteHttpListener',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('HTTP 监听不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/stream-services': {
+      get: {
+        tags: ['stream'],
+        summary: '分页查询 Stream 服务列表',
+        operationId: 'listStreamServices',
+        parameters: [
+          ...pageParams,
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤' },
+          { name: 'protocol', in: 'query', schema: { type: 'string', enum: ['tcp', 'udp'] }, description: '按协议过滤' },
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '关键字（匹配描述或后端地址）' },
+        ],
+        responses: { '200': ok('#/components/schemas/StreamServicePage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['stream'],
+        summary: '创建 Stream 服务',
+        operationId: 'createStreamService',
+        requestBody: jsonBody('#/components/schemas/StreamServicePayload', {
+          centerId: 1,
+          description: 'MongoDB 分片集群入口',
+          protocol: 'tcp',
+          listenAddress: '0.0.0.0',
+          listenPort: 27017,
+          backends: ['mongo-01:27017', 'mongo-02:27017'],
+        }),
+        responses: {
+          '200': ok('#/components/schemas/StreamService'),
+          '400': bad('后端服务地址不能为空，请至少填写一个（host:port）'),
+          '409': bad('端口冲突：同中心同协议已存在该端口的服务', 409),
+        },
+      },
+    },
+    '/orp/stream-services/{id}': {
+      put: {
+        tags: ['stream'],
+        summary: '更新 Stream 服务',
+        operationId: 'updateStreamService',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/StreamServicePayload', {
+          centerId: 1,
+          description: 'MySQL 主从四层代理（扩容）',
+          protocol: 'tcp',
+          listenAddress: '0.0.0.0',
+          listenPort: 3306,
+          backends: ['mysql-cluster-01:3306', 'mysql-cluster-02:3306', 'mysql-cluster-03:3306'],
+        }),
+        responses: {
+          '200': ok('#/components/schemas/StreamService'),
+          '404': bad('Stream 服务不存在或已被删除', 404),
+          '409': bad('端口冲突', 409),
+        },
+      },
+      delete: {
+        tags: ['stream'],
+        summary: '删除 Stream 服务',
+        operationId: 'deleteStreamService',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('Stream 服务不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/certificates': {
+      get: {
+        tags: ['tls'],
+        summary: '分页查询证书列表',
+        description: '列表接口不下发 privateKey（私钥明文仅通过 detail 接口获取）。',
+        operationId: 'listCertificates',
+        parameters: [
+          ...pageParams,
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '关键字（匹配证书名称或域名）' },
+        ],
+        responses: { '200': ok('#/components/schemas/CertificatePage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['tls'],
+        summary: '录入证书',
+        operationId: 'createCertificate',
+        requestBody: jsonBody('#/components/schemas/CertificatePayload', {
+          name: 'new-example-cn',
+          domains: 'new.example.cn',
+          centerScope: [1, 2],
+          notBefore: '2026-01-01 00:00:00',
+          notAfter: '2027-01-01 23:59:59',
+          certificate: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+          certificateChain: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+          privateKey: '-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----',
+        }),
+        responses: {
+          '200': ok('#/components/schemas/Certificate'),
+          '400': bad('证书格式错误：公钥证书必须是 PEM 格式'),
+          '409': bad('证书名称已存在', 409),
+        },
+      },
+    },
+    '/orp/certificates/{id}': {
+      put: {
+        tags: ['tls'],
+        summary: '更新证书',
+        description: 'privateKey 为空时保留原私钥；证书与域名等信息整体替换。',
+        operationId: 'updateCertificate',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/CertificatePayload', {
+          name: 'console-example-cn',
+          domains: 'console.example.cn',
+          centerScope: 'all',
+          notBefore: '2026-11-19 00:00:00',
+          notAfter: '2027-11-19 23:59:59',
+          certificate: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+          certificateChain: '',
+          privateKey: '',
+        }),
+        responses: {
+          '200': ok('#/components/schemas/Certificate'),
+          '404': bad('证书不存在或已被删除', 404),
+          '409': bad('证书名称已存在', 409),
+        },
+      },
+      delete: {
+        tags: ['tls'],
+        summary: '删除证书',
+        description: '被任一 HTTP 监听引用时返回 409 拒绝删除。',
+        operationId: 'deleteCertificate',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('证书不存在或已被删除', 404),
+          '409': bad('证书正被 HTTP 监听引用，请先解除引用', 409),
+        },
+      },
+    },
+    '/orp/certificates/{id}/detail': {
+      get: {
+        tags: ['tls'],
+        summary: '查询证书明文详情',
+        description: '包含 PEM 公钥证书与私钥明文，仅限运维场景使用。',
+        operationId: 'getCertificateDetail',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/CertificateDetail'),
+          '404': bad('证书不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/dns-resolvers': {
+      get: {
+        tags: ['dns'],
+        summary: '分页查询 DNS 解析器列表',
+        operationId: 'listDnsResolvers',
+        parameters: [
+          ...pageParams,
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤' },
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '关键字（匹配解析器地址）' },
+        ],
+        responses: { '200': ok('#/components/schemas/DnsResolverPage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['dns'],
+        summary: '新增 DNS 解析器',
+        operationId: 'createDnsResolver',
+        requestBody: jsonBody('#/components/schemas/DnsResolverPayload', {
+          centerId: 4,
+          address: '119.29.29.29',
+          port: 53,
+          timeoutSec: 5,
+          cacheTtlSec: 300,
+        }),
+        responses: {
+          '200': ok('#/components/schemas/DnsResolver'),
+          '404': bad('所属中心不存在', 404),
+        },
+      },
+    },
+    '/orp/dns-resolvers/{id}': {
+      put: {
+        tags: ['dns'],
+        summary: '更新 DNS 解析器',
+        operationId: 'updateDnsResolver',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/DnsResolverPayload', {
+          centerId: 4,
+          address: '223.5.5.5',
+          port: 53,
+          timeoutSec: 5,
+          cacheTtlSec: 600,
+        }),
+        responses: {
+          '200': ok('#/components/schemas/DnsResolver'),
+          '404': bad('DNS 解析器不存在或已被删除', 404),
+        },
+      },
+      delete: {
+        tags: ['dns'],
+        summary: '删除 DNS 解析器',
+        operationId: 'deleteDnsResolver',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('DNS 解析器不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/ip-groups': {
+      get: {
+        tags: ['ip-group'],
+        summary: '分页查询 IP 组列表',
+        operationId: 'listIpGroups',
+        parameters: [
+          ...pageParams,
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '按组名称或描述关键字模糊检索' },
+        ],
+        responses: { '200': ok('#/components/schemas/OrpIpGroupPage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['ip-group'],
+        summary: '新增 IP 组',
+        operationId: 'createIpGroup',
+        requestBody: jsonBody('#/components/schemas/OrpIpGroupPayload', {
+          name: 'Office_Internal_Net',
+          description: '总部与分支办公内网网段',
+          members: ['192.168.0.0/16', '10.200.0.0/24'],
+        }),
+        responses: {
+          '200': ok('#/components/schemas/OrpIpGroup'),
+          '400': bad('组名称为必填项 / 组名称长度必须是 2-64 位 / IP 组名称已存在 / 成员 IP 或 CIDR 格式不合法'),
+        },
+      },
+    },
+    '/orp/ip-groups/{id}': {
+      put: {
+        tags: ['ip-group'],
+        summary: '更新 IP 组',
+        operationId: 'updateIpGroup',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/OrpIpGroupPayload', {
+          name: 'Office_Internal_Net',
+          description: '总部与分支办公内网网段（含分支扩展）',
+          members: ['192.168.0.0/16', '10.200.0.0/24', '172.16.10.15'],
+        }),
+        responses: {
+          '200': ok('#/components/schemas/OrpIpGroup'),
+          '404': bad('IP 组不存在或已被删除', 404),
+        },
+      },
+      delete: {
+        tags: ['ip-group'],
+        summary: '删除 IP 组',
+        operationId: 'deleteIpGroup',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '404': bad('IP 组不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/upstream-groups': {
+      get: {
+        tags: ['upstream'],
+        summary: '分页查询上游服务器组列表',
+        operationId: 'listUpstreamGroups',
+        parameters: [
+          ...pageParams,
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤' },
+          { name: 'keyword', in: 'query', schema: { type: 'string' }, description: '关键字（匹配名称/描述/标签）' },
+        ],
+        responses: { '200': ok('#/components/schemas/UpstreamGroupPage'), '400': bad('查询参数错误') },
+      },
+      post: {
+        tags: ['upstream'],
+        summary: '新增上游服务器组',
+        operationId: 'createUpstreamGroup',
+        requestBody: jsonBody('#/components/schemas/UpstreamGroupPayload', {
+          centerId: 1,
+          name: 'api-gateway',
+          lbPolicy: 'least_conn',
+          description: 'API 网关上游',
+          tags: ['api'],
+          nodes: [
+            { host: '10.60.3.11', port: 8080, weight: 2, maxFails: 3, failTimeoutSec: 10, slowStartSec: 0, backup: false },
+          ],
+          healthCheck: { type: 'http', intervalSec: 5, path: '/healthz', expectedStatus: [200] },
+        }),
+        responses: {
+          '200': ok('#/components/schemas/UpstreamGroup'),
+          '400': bad('名称已存在 / 节点校验失败'),
+          '404': bad('所属中心不存在', 404),
+        },
+      },
+    },
+    '/orp/upstream-groups/{id}': {
+      put: {
+        tags: ['upstream'],
+        summary: '更新上游服务器组',
+        description: '重命名时若旧名称被 HTTP 路由或 Stream 服务引用，将被拦截。',
+        operationId: 'updateUpstreamGroup',
+        parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/UpstreamGroupPayload', {
+          centerId: 1,
+          name: 'api-gateway',
+          lbPolicy: 'round_robin',
+          description: 'API 网关上游（更新）',
+          tags: ['api'],
+          nodes: [
+            { host: '10.60.3.11', port: 8080, weight: 3, maxFails: 3, failTimeoutSec: 10, slowStartSec: 0, backup: false },
+            { host: '10.60.3.12', port: 8080, weight: 1, maxFails: 2, failTimeoutSec: 10, slowStartSec: 30, backup: true },
+          ],
+          healthCheck: { type: 'tcp', intervalSec: 10, path: '', expectedStatus: [] },
+        }),
+        responses: {
+          '200': ok('#/components/schemas/UpstreamGroup'),
+          '400': bad('重命名被引用 / 节点校验失败'),
+          '404': bad('上游组不存在或已被删除', 404),
+        },
+      },
+      delete: {
+        tags: ['upstream'],
+        summary: '删除上游服务器组',
+        description: '被 HTTP 路由或 Stream 服务引用时禁止删除，需先解除引用。',
+        operationId: 'deleteUpstreamGroup',
+        parameters: [idParam],
+        responses: {
+          '200': ok('#/components/schemas/NullData'),
+          '400': bad('仍被引用，禁止删除'),
+          '404': bad('上游组不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/dashboard/metrics': {
+      get: {
+        tags: ['dashboard'],
+        summary: '大盘核心指标（指标卡/延迟/状态码/健康/节点负载）',
+        operationId: 'getDashboardMetrics',
+        parameters: [
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤（缺省为全部）' },
+          { name: 'range', in: 'query', schema: { $ref: '#/components/schemas/DashboardRange' }, description: '统计时间范围' },
+        ],
+        responses: { '200': ok('#/components/schemas/DashboardMetrics') },
+      },
+    },
+    '/orp/dashboard/events': {
+      get: {
+        tags: ['dashboard'],
+        summary: '控制面大盘 SSE 实时推送',
+        description: '建立授权事件流，立即推送指标、趋势与排行快照，随后每 10 秒更新；断线后客户端可重连。',
+        operationId: 'streamDashboardEvents',
+        parameters: [
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤（缺省为全部）' },
+          { name: 'range', in: 'query', schema: { $ref: '#/components/schemas/DashboardRange' }, description: '统计时间范围' },
+        ],
+        responses: {
+          '200': { description: 'text/event-stream，事件名 dashboard，data 为指标、趋势与排行 JSON 快照' },
+          '401': bad('登录状态已失效', 401),
+        },
+      },
+    },
+    '/orp/dashboard/trends': {
+      get: {
+        tags: ['dashboard'],
+        summary: '大盘 QPS / 带宽 / 延迟时间序列趋势',
+        operationId: 'getDashboardTrends',
+        parameters: [
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤（缺省为全部）' },
+          { name: 'range', in: 'query', schema: { $ref: '#/components/schemas/DashboardRange' }, description: '统计时间范围' },
+        ],
+        responses: { '200': ok('#/components/schemas/DashboardTrends') },
+      },
+    },
+    '/orp/dashboard/top-rankings': {
+      get: {
+        tags: ['dashboard'],
+        summary: 'Top 域名与路由请求排行',
+        operationId: 'getDashboardTopRankings',
+        parameters: [
+          { name: 'centerId', in: 'query', schema: { type: 'integer' }, description: '按中心过滤（缺省为全部）' },
+          { name: 'range', in: 'query', schema: { $ref: '#/components/schemas/DashboardRange' }, description: '统计时间范围' },
+        ],
+        responses: { '200': ok('#/components/schemas/DashboardTopRankings') },
+      },
+    },
+    '/orp/audit-logs': {
+      get: {
+        tags: ['audit'],
+        summary: '分页查询审计日志',
+        description: '按模块 / 操作类型 / 操作人 / 时间范围组合检索，按时间倒序返回。',
+        operationId: 'listAuditLogs',
+        parameters: [
+          ...pageParams,
+          { name: 'module', in: 'query', schema: { $ref: '#/components/schemas/AuditModule' }, description: '按模块过滤' },
+          { name: 'action', in: 'query', schema: { $ref: '#/components/schemas/AuditAction' }, description: '按操作类型过滤' },
+          { name: 'operator', in: 'query', schema: { type: 'string' }, description: '操作人（模糊匹配）' },
+          { name: 'startTime', in: 'query', schema: { type: 'string', example: '2026-09-01' }, description: '起始日期（YYYY-MM-DD）' },
+          { name: 'endTime', in: 'query', schema: { type: 'string', example: '2026-09-30' }, description: '结束日期（YYYY-MM-DD，含当日）' },
+        ],
+        responses: { '200': ok('#/components/schemas/AuditLogPage'), '400': bad('查询参数错误') },
+      },
+    },
+    '/orp/nodes/{id}/latency-history': {
+      get: {
+        tags: ['nodes'],
+        summary: '查询节点探活延迟历史',
+        operationId: 'getNodeLatencyHistory',
+        parameters: [{ ...idParam }, { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500 } }],
+        responses: { '200': { description: '延迟采样和统计摘要' } },
+      },
+    },
+    '/orp/certificates/stats': {
+      get: {
+        tags: ['tls'],
+        summary: '证书统计与到期概览',
+        operationId: 'getCertificateStats',
+        responses: { '200': { description: '证书总数、有效数和到期数量' } },
+      },
+    },
+    '/orp/settings/groups': {
+      get: { tags: ['settings'], summary: '查询配置分组名称', operationId: 'listSettingGroupNames', responses: { '200': { description: '配置分组列表' } } },
+    },
+    '/orp/settings/{id}/plain': {
+      get: { tags: ['settings'], summary: '授权读取敏感配置明文', operationId: 'getSettingPlain', parameters: [idParam], responses: { '200': { description: '配置明文，仅有读取权限时返回' }, '403': bad('无明文读取权限', 403) } },
+    },
+    '/orp/settings/{id}/status': {
+      put: { tags: ['settings'], summary: '启用或停用配置项', operationId: 'updateSettingStatus', parameters: [idParam], responses: { '200': { description: '更新后的配置项' } } },
+    },
+    '/orp/settings/batch-move': {
+      post: { tags: ['settings'], summary: '批量移动配置项分组', operationId: 'batchMoveSettings', responses: { '200': { description: '移动结果' } } },
+    },
+    '/orp/setting-groups': {
+      get: { tags: ['settings'], summary: '查询配置分组', operationId: 'listSettingGroups', responses: { '200': { description: '配置分组列表' } } },
+      post: { tags: ['settings'], summary: '新增配置分组', operationId: 'createSettingGroup', responses: { '200': { description: '新建分组' } } },
+    },
+    '/orp/setting-groups/{id}': {
+      put: { tags: ['settings'], summary: '编辑配置分组', operationId: 'updateSettingGroup', parameters: [idParam], responses: { '200': { description: '更新后的分组' } } },
+      delete: { tags: ['settings'], summary: '删除配置分组', operationId: 'deleteSettingGroup', parameters: [idParam], responses: { '200': ok('#/components/schemas/NullData') } },
+    },
+    '/orp/setting-groups/reorder': {
+      put: { tags: ['settings'], summary: '调整配置分组顺序', operationId: 'reorderSettingGroups', responses: { '200': { description: '更新后的分组顺序' } } },
+    },
+    '/orp/http-directives': {
+      get: { tags: ['http'], summary: '读取 HTTP 全局指令', operationId: 'getHttpDirectives', responses: { '200': { description: 'HTTP 指令集合' } } },
+      put: { tags: ['http'], summary: '更新 HTTP 全局指令', operationId: 'putHttpDirectives', responses: { '200': { description: '更新结果' } } },
+    },
+    '/orp/stream-directives': {
+      get: { tags: ['stream'], summary: '读取 Stream 全局指令', operationId: 'getStreamDirectives', responses: { '200': { description: 'Stream 指令集合' } } },
+      put: { tags: ['stream'], summary: '更新 Stream 全局指令', operationId: 'putStreamDirectives', responses: { '200': { description: '更新结果' } } },
+    },
+    '/orp/http-log-format': {
+      get: { tags: ['http'], summary: '读取 HTTP 访问日志格式', operationId: 'getHttpLogFormat', responses: { '200': { description: 'HTTP 日志格式' } } },
+      put: { tags: ['http'], summary: '更新 HTTP 访问日志格式', operationId: 'putHttpLogFormat', responses: { '200': { description: '更新结果' } } },
+    },
+    '/orp/http-error-pages': {
+      get: { tags: ['http'], summary: '读取 HTTP 全局错误页面', operationId: 'getHttpErrorPages', responses: { '200': { description: '状态码或状态码|Content-Type 到页面文本的映射' } } },
+      put: {
+        tags: ['http'], summary: '更新 HTTP 全局错误页面', operationId: 'putHttpErrorPages',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['errorPages'], properties: { errorPages: { type: 'object', additionalProperties: { type: 'string' }, description: '支持 400–599 状态码；内容限制 1 MB' } } }, example: { errorPages: { '404': '<h1>Not found</h1>', '404|application/json': '{"error":"not found"}' } } } },
+        },
+        responses: { '200': { description: '更新后的错误页面映射' }, '400': bad('错误页面配置无效') },
+      },
+    },
+    '/orp/stream-log-format': {
+      get: { tags: ['stream'], summary: '读取 Stream 访问日志格式', operationId: 'getStreamLogFormat', responses: { '200': { description: 'Stream 日志格式' } } },
+      put: { tags: ['stream'], summary: '更新 Stream 访问日志格式', operationId: 'putStreamLogFormat', responses: { '200': { description: '更新结果' } } },
+    },
+    '/orp/logs': {
+      get: {
+        tags: ['logs'],
+        summary: '读取本地节点或服务日志',
+        operationId: 'getLogs',
+        parameters: [{ name: 'target', in: 'query', required: true, schema: { type: 'string', example: 'node:11' } }],
+        responses: { '200': { description: '日志行列表' }, '400': bad('日志目标无效') },
+      },
+    },
+    '/orp/logs/events': {
+      get: {
+        tags: ['logs'],
+        summary: '通过 Server-Sent Events 推送实时日志',
+        operationId: 'streamLogEvents',
+        parameters: [{ name: 'target', in: 'query', required: true, schema: { type: 'string', example: 'node:11' } }],
+        responses: { '200': { description: 'SSE 日志事件流', content: { 'text/event-stream': { schema: { type: 'string' } } } }, '400': bad('日志目标无效') },
+      },
+    },
+    '/orp/publish/precheck': {
+      post: { tags: ['publish'], summary: '冻结候选并在目标节点运行 nginx -t', operationId: 'precheckPublish', responses: { '200': { description: '逐节点预检结果与配置 Diff' } } },
+    },
+    '/orp/publish/summary': {
+      get: { tags: ['publish'], summary: '查询待下发配置汇总', operationId: 'getPublishSummary', responses: { '200': { description: '按中心及节点分组的待发布摘要' } } },
+    },
+    '/orp/publish/diff': {
+      get: { tags: ['publish'], summary: '查询节点期望配置与已发布配置差异', operationId: 'getPublishDiff', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'integer' } }], responses: { '200': { description: '语义和文本 Diff' } } },
+    },
+    '/orp/publish/history': {
+      get: { tags: ['publish'], summary: '分页查询发布历史', operationId: 'listPublishHistory', parameters: [...pageParams, { name: 'centerId', in: 'query', schema: { type: 'integer' } }, { name: 'nodeId', in: 'query', schema: { type: 'integer' } }], responses: { '200': { description: '发布历史列表' } } },
+    },
+    '/orp/publish/history/stats': {
+      get: { tags: ['publish'], summary: '查询发布历史统计', operationId: 'getPublishHistoryStats', responses: { '200': { description: '成功率和变更排行' } } },
+    },
+    '/orp/publish/rollback': {
+      post: { tags: ['publish'], summary: '从发布历史快照执行回滚', operationId: 'rollbackPublish', responses: { '200': { description: '回滚批次信息' } } },
+    },
+    '/orp/alert-channels': {
+      get: { tags: ['alerts'], summary: '查询告警推送通道', operationId: 'listAlertChannels', responses: { '200': { description: '通道列表（地址脱敏，密钥不下发）' } } },
+      post: {
+        tags: ['alerts'], summary: '创建 Webhook 或飞书机器人通道', operationId: 'createAlertChannel',
+        requestBody: jsonBody('#/components/schemas/AlertChannelPayload', { name: '运维告警群', type: 'webhook', webhookUrl: 'https://example.com/webhook', secret: '可选签名密钥', enabled: true }),
+        responses: { '201': { description: '已创建的通道（地址脱敏）' }, '400': bad('通道类型、地址或名称无效') },
+      },
+    },
+    '/agent/v1/heartbeat': {
+      post: { tags: ['agent'], summary: 'Agent 上报心跳', operationId: 'agentHeartbeat', security: [], description: '仅可通过独立 mTLS listener 调用；客户端证书指纹必须绑定到请求中的 nodeId。', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['nodeId', 'state'], properties: { nodeId: { type: 'string' }, state: { type: 'object' } } } } } }, responses: { '204': { description: '心跳已保存' }, '401': { description: '证书未登记或节点 ID 不匹配' } } },
+    },
+    '/agent/v1/tasks/next': {
+      get: { tags: ['agent'], summary: 'Agent 领取一个固定操作任务', operationId: 'agentNextTask', security: [], description: '仅可通过独立 mTLS listener 调用。无任务返回 204；当前仅支持 reload。', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: '固定 reload 任务' }, '204': { description: '暂无任务' } } },
+    },
+    '/agent/v1/tasks/{taskId}/result': {
+      post: { tags: ['agent'], summary: 'Agent 回报固定操作任务结果', operationId: 'agentTaskResult', security: [], description: '仅可通过独立 mTLS listener 调用；任务结果按 taskId 幂等保存。', parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['taskId', 'nodeId', 'status'], properties: { taskId: { type: 'string', format: 'uuid' }, nodeId: { type: 'string' }, status: { type: 'string', enum: ['succeeded', 'failed', 'rejected'] }, startedAt: { type: 'string', format: 'date-time' }, completedAt: { type: 'string', format: 'date-time' }, output: { type: 'string', maxLength: 4096 }, error: { type: 'string', maxLength: 2048 } } } } } }, responses: { '204': { description: '结果已保存' }, '403': { description: '任务不属于该节点' }, '409': { description: '任务尚未领取或已经过期' } } },
+    },
+    '/orp/alert-channels/{id}': {
+      put: {
+        tags: ['alerts'], summary: '更新告警通道', operationId: 'updateAlertChannel', parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/AlertChannelPayload', { name: '运维告警群', type: 'webhook', enabled: true }),
+        responses: { '200': { description: '已更新通道；Webhook 地址和签名密钥留空时保持原值' }, '404': bad('告警通道不存在', 404) },
+      },
+      delete: { tags: ['alerts'], summary: '删除告警通道并解除证书关联', operationId: 'deleteAlertChannel', parameters: [idParam], responses: { '200': { description: '删除结果；历史发送记录保留' } } },
+    },
+    '/orp/alert-channels/{id}/test': {
+      post: { tags: ['alerts'], summary: '向指定通道发送测试消息', operationId: 'testAlertChannel', parameters: [idParam], responses: { '200': { description: '测试发送结果与接收端响应' }, '502': bad('测试消息发送失败', 502) } },
+    },
+    '/orp/tls-alert-rules': {
+      get: { tags: ['alerts'], summary: '查询 TLS 证书到期提醒规则及关联通道', operationId: 'listTLSAlertRules', responses: { '200': { description: '证书到期状态与提醒规则列表' } } },
+    },
+    '/orp/tls-alert-rules/{certificateID}': {
+      put: {
+        tags: ['alerts'], summary: '保存证书到期提醒规则和通道关联', operationId: 'saveTLSAlertRule',
+        parameters: [{ name: 'certificateID', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        requestBody: jsonBody('#/components/schemas/TLSAlertRulePayload', { enabled: true, daysBefore: 30, channelIds: [1] }),
+        responses: { '200': { description: '已保存规则' }, '400': bad('提醒天数或通道关联无效') },
+      },
+    },
+    '/orp/alert-deliveries': {
+      get: { tags: ['alerts'], summary: '分页查询告警发送历史', operationId: 'listAlertDeliveries', parameters: pageParams, responses: { '200': { description: '告警发送记录分页结果' } } },
+    },
+    '/orp/tls-alerts/check': {
+      post: { tags: ['alerts'], summary: '立即检查 TLS 到期规则并推送通知', operationId: 'checkTLSAlerts', responses: { '200': { description: '检查证书数、成功数、失败数及错误信息' } } },
+    },
+  },
+  components: {
+    securitySchemes: {
+      bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+    },
+    schemas: {
+      ApiResponseError: {
+        type: 'object',
+        description: '统一失败响应（code=-1）',
+        properties: {
+          code: { type: 'integer', example: -1 },
+          message: { type: 'string', example: '失败原因' },
+          data: { nullable: true, example: null },
+        },
+        required: ['code', 'message'],
+      },
+      AlertChannelPayload: {
+        type: 'object', required: ['name', 'type'],
+        properties: {
+          name: { type: 'string', maxLength: 128 },
+          type: { type: 'string', enum: ['webhook', 'feishu'] },
+          webhookUrl: { type: 'string', format: 'uri', description: '创建时必填；更新留空保持原地址' },
+          messageFormat: { type: 'string', enum: ['text', 'card'], description: '飞书通道消息格式；普通 Webhook 固定为 text' },
+          secret: { type: 'string', description: 'Webhook HMAC 密钥或飞书机器人签名密钥；更新留空保持原值' },
+          enabled: { type: 'boolean', default: true },
+        },
+      },
+      AlertChannel: {
+        type: 'object', properties: {
+          id: { type: 'integer' }, name: { type: 'string' }, type: { type: 'string', enum: ['webhook', 'feishu'] },
+          messageFormat: { type: 'string', enum: ['text', 'card'], description: '飞书通道当前消息格式' },
+          targetHint: { type: 'string', description: '脱敏后的推送地址提示' }, hasSecret: { type: 'boolean' }, enabled: { type: 'boolean' },
+          createdAt: { type: 'string', format: 'date-time' }, updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      TLSAlertRulePayload: {
+        type: 'object', required: ['enabled', 'daysBefore', 'channelIds'],
+        properties: {
+          enabled: { type: 'boolean' }, daysBefore: { type: 'integer', minimum: 1, maximum: 365 },
+          channelIds: { type: 'array', items: { type: 'integer', minimum: 1 }, description: '关联的告警通道 ID' },
+        },
+      },
+      TLSAlertRule: {
+        type: 'object', properties: {
+          certificateId: { type: 'integer' }, name: { type: 'string' }, domains: { type: 'string' }, notAfter: { type: 'string', format: 'date' },
+          daysRemaining: { type: 'integer' }, enabled: { type: 'boolean' }, daysBefore: { type: 'integer' },
+          channelIds: { type: 'array', items: { type: 'integer' } }, channelNames: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      AlertDelivery: {
+        type: 'object', properties: {
+          id: { type: 'integer' }, eventType: { type: 'string', enum: ['test', 'tls_expiry'] }, channelId: { type: 'integer' },
+          channelName: { type: 'string' }, certificateId: { type: 'integer', nullable: true }, certificateName: { type: 'string' },
+          title: { type: 'string' }, content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'sending', 'sent', 'failed'] },
+          attemptCount: { type: 'integer' }, responseStatus: { type: 'integer', nullable: true }, responseText: { type: 'string' },
+          errorText: { type: 'string' }, deliveredAt: { type: 'string', format: 'date-time', nullable: true }, createdAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      NullData: { nullable: true, example: null, description: '删除类接口的 data 固定为 null' },
+      NodeStatus: {
+      type: 'string',
+      enum: ['running', 'paused', 'stopped', 'maintenance'],
+      description: '节点运行状态：运行中 / 已暂停 / 已停止 / 维护中',
+    },
+      AuditModule: { type: 'string', enum: ['center', 'node', 'http', 'stream', 'tls', 'dns', 'upstream'] },
+      GeoIPDatabaseInfo: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' },
+          state: { type: 'string', enum: ['disabled', 'error', 'ready'] },
+          source: { type: 'string', enum: ['managed', 'environment', 'none'] },
+          fileName: { type: 'string' }, sizeBytes: { type: 'integer' }, sha256: { type: 'string' },
+          databaseType: { type: 'string', example: 'GeoLite2-City' },
+          buildTime: { type: 'string', format: 'date-time' }, importedAt: { type: 'string', format: 'date-time' },
+          importedBy: { type: 'string' }, message: { type: 'string' },
+        },
+      },
+      DashboardRange: { type: 'string', enum: ['today', '24h', '7d'] },
+      DashboardSummary: {
+        type: 'object',
+        properties: {
+          totalRequests: { type: 'integer', example: 1_842_000, description: '统计周期内请求总量' },
+          qpsAvg: { type: 'integer', example: 21 },
+          qpsPeak: { type: 'integer', example: 49 },
+          bandwidthInMbps: { type: 'integer', example: 3120 },
+          bandwidthOutMbps: { type: 'integer', example: 11_840 },
+          activeConns: { type: 'integer', example: 86_200 },
+          errorRate: { type: 'number', example: 0.35, description: '4xx+5xx 占比（%）' },
+          availability: { type: 'number', nullable: true, example: 99.86, description: '所选时间范围内节点探活成功次数 / 总探测次数，百分比保留两位小数；无样本为 null' },
+        },
+      },
+      DashboardMetrics: {
+        type: 'object',
+        properties: {
+          summary: { $ref: '#/components/schemas/DashboardSummary' },
+          geography: {
+            type: 'object',
+            properties: {
+              state: { type: 'string', enum: ['disabled', 'error', 'ready'] },
+              reason: { type: 'string' },
+              sampledEvents: { type: 'integer' }, sampleLimit: { type: 'integer' }, unknownRequests: { type: 'integer' },
+              points: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, countryCode: { type: 'string' }, coord: { type: 'array', items: { type: 'number' } }, requests: { type: 'integer' } } } },
+              centers: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, coord: { type: 'array', items: { type: 'number' } } } } },
+              flows: { type: 'array', items: { type: 'object', properties: { source: { type: 'string' }, center: { type: 'string' }, coords: { type: 'array', items: { type: 'array', items: { type: 'number' } } }, requests: { type: 'integer' } } } },
+            },
+          },
+          latency: {
+            type: 'object',
+            properties: {
+              p50Ms: { type: 'number', example: 16.8 },
+              p95Ms: { type: 'number', example: 112.4 },
+              p99Ms: { type: 'number', example: 238.9 },
+              buckets: { type: 'array', items: { type: 'object', properties: { label: { type: 'string', example: '<10ms' }, count: { type: 'integer' } } } },
+            },
+          },
+          statusCodes: {
+            type: 'object',
+            properties: {
+              c2xx: { type: 'integer' }, c3xx: { type: 'integer' },
+              c4xx: { type: 'integer' }, c5xx: { type: 'integer' },
+            },
+          },
+          upstreamHealth: {
+            type: 'object',
+            properties: {
+              healthy: { type: 'integer' }, degraded: { type: 'integer' }, down: { type: 'integer' },
+              groups: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, centerName: { type: 'string' }, lbPolicy: { type: 'string' }, total: { type: 'integer' }, healthyCount: { type: 'integer' }, onlineRate: { type: 'integer' }, status: { type: 'string', enum: ['healthy', 'degraded', 'down'] } } } },
+            },
+          },
+          nodeLoad: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, centerName: { type: 'string' }, status: { type: 'string' }, cpuPercent: { type: 'integer' }, memPercent: { type: 'integer' }, conns: { type: 'integer' } } } },
+        },
+      },
+      DashboardTrends: {
+        type: 'object',
+        properties: {
+          points: { type: 'array', items: { type: 'object', properties: { time: { type: 'string', example: '14:00' }, qps: { type: 'integer' }, inMbps: { type: 'integer' }, outMbps: { type: 'integer' }, avgLatencyMs: { type: 'number' } } } },
+        },
+      },
+      DashboardTopRankings: {
+        type: 'object',
+        properties: {
+          domains: { type: 'array', items: { type: 'object', properties: { domain: { type: 'string' }, requests: { type: 'integer' }, percent: { type: 'number' }, avgLatencyMs: { type: 'number' } } } },
+          routes: { type: 'array', items: { type: 'object', properties: { domain: { type: 'string' }, path: { type: 'string' }, requests: { type: 'integer' }, percent: { type: 'number' }, avgLatencyMs: { type: 'number' } } } },
+        },
+      },
+      AuditAction: { type: 'string', enum: ['create', 'update', 'delete', 'offline'] },
+      Center: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string', example: '华东生产中心' },
+          code: { type: 'string', example: 'cn-east-1' },
+          description: { type: 'string' },
+          nodeCount: { type: 'integer', description: '中心下节点数量（仅列表接口返回）' },
+          createdAt: { type: 'string', example: '2026-03-12 10:20:00' },
+          updatedAt: { type: 'string', example: '2026-09-20 14:02:11' },
+        },
+      },
+      CenterPayload: {
+        type: 'object',
+        required: ['name', 'code'],
+        properties: {
+          name: { type: 'string', maxLength: 64, description: '中心名称' },
+          code: { type: 'string', pattern: '^[a-z0-9-]+$', maxLength: 32, description: '中心唯一标识（小写字母/数字/中划线）' },
+          description: { type: 'string', maxLength: 256 },
+          latitude: { type: 'number', minimum: -90, maximum: 90, nullable: true, description: '大屏中心纬度' },
+          longitude: { type: 'number', minimum: -180, maximum: 180, nullable: true, description: '大屏中心经度' },
+        },
+      },
+      CenterPage: { $ref: '#/components/schemas/PageResultOfCenter' },
+      PageResultOfCenter: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/Center' } },
+          total: { type: 'integer' },
+        },
+      },
+      Node: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string', example: 'or-sh-ngx-01' },
+          centerId: { type: 'integer' },
+          centerName: { type: 'string', example: '华东生产中心' },
+          host: { type: 'string', example: '10.60.1.11' },
+          controlEndpoint: { type: 'string', example: 'http://10.60.1.11:8081/control' },
+          osInfo: { type: 'string', example: 'Ubuntu 22.04 / OpenResty 1.25.3' },
+          activeVersion: { type: 'string', example: 'v2.4.1' },
+          status: { $ref: '#/components/schemas/NodeStatus' },
+          createdAt: { type: 'string' },
+        },
+      },
+      NodePayload: {
+        type: 'object',
+        required: ['name', 'centerId', 'host'],
+        properties: {
+          name: { type: 'string', maxLength: 64 },
+          centerId: { type: 'integer' },
+          host: { type: 'string', description: '主机地址（IP），全局唯一' },
+          controlEndpoint: { type: 'string', description: '控制面接入地址，缺省为 http://{host}:8081/control' },
+          osInfo: { type: 'string' },
+          activeVersion: { type: 'string' },
+          status: { $ref: '#/components/schemas/NodeStatus' },
+        },
+      },
+      NodePage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/Node' } },
+          total: { type: 'integer' },
+        },
+      },
+      NodeMetrics: {
+        type: 'object',
+        properties: {
+          cpuPercent: { type: 'number', example: 31.5 },
+          memPercent: { type: 'number', example: 58.2 },
+          connections: { type: 'integer', example: 9208 },
+          qps: { type: 'integer', example: 3733 },
+          bandwidthInMbps: { type: 'number', example: 157.3 },
+          bandwidthOutMbps: { type: 'number', example: 253.7 },
+          errorRatePercent: { type: 'number', example: 0.03 },
+          requestTotal24h: { type: 'integer', example: 921327 },
+          uptimeDays: { type: 'integer', example: 15 },
+        },
+      },
+      NodeMetricsWrap: {
+        type: 'object',
+        properties: {
+          node: { $ref: '#/components/schemas/Node' },
+          metrics: { $ref: '#/components/schemas/NodeMetrics' },
+        },
+      },
+      OrpIpPolicy: {
+        type: 'object',
+        description: 'IP 访问控制策略（server/location 块级 allow/deny 指令组）',
+        properties: {
+          enabled: { type: 'boolean', example: true, description: '是否启用（关闭时不生成 allow/deny 指令）' },
+          priority: {
+            type: 'string',
+            enum: ['allow-first', 'deny-first'],
+            default: 'allow-first',
+            description: '优先模式：allow-first 白名单优先（allow 组在前），deny-first 黑名单优先（deny 组在前）',
+          },
+          allowList: { type: 'array', items: { type: 'string', example: '10.0.0.0/8' }, description: '白名单（allow）IP 或 CIDR 网段列表' },
+          denyList: { type: 'array', items: { type: 'string', example: '172.16.0.0/16' }, description: '黑名单（deny）IP 或 CIDR 网段列表' },
+        },
+      },
+      LocationRule: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer', example: 101, description: '路由规则 ID（更新时携带以保留，新增规则缺省自动生成）' },
+          path: { type: 'string', example: '/v2/*' },
+          upstream: {
+            type: 'string',
+            example: 'http://svc-api-v2:8080',
+            description:
+              '代理类：转发目标，由上游协议与 Upstream 组名组合生成（http:// 或 https:// 前缀 + 组名）',
+          },
+          proxyTimeoutMs: { type: 'integer', example: 30000, default: 30000 },
+          ipPolicy: { $ref: '#/components/schemas/OrpIpPolicy' },
+        },
+      },
+      HttpListener: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          centerId: { type: 'integer' },
+          centerName: { type: 'string' },
+          domain: { type: 'string', example: 'api.example.cn' },
+          port: { type: 'integer', example: 8443 },
+          tlsCertId: { type: 'integer', nullable: true, example: 2 },
+          certName: { type: 'string', example: 'api-example-cn', description: '关联证书名称（无关联时为 —）' },
+          routes: { type: 'array', items: { $ref: '#/components/schemas/LocationRule' } },
+          routeCount: { type: 'integer' },
+          createdAt: { type: 'string' },
+          ipPolicy: { $ref: '#/components/schemas/OrpIpPolicy' },
+          errorPages: { $ref: '#/components/schemas/HttpErrorPages' },
+        },
+      },
+      HttpListenerPayload: {
+        type: 'object',
+        required: ['centerId', 'domain', 'port'],
+        properties: {
+          centerId: { type: 'integer' },
+          domain: { type: 'string' },
+          port: { type: 'integer', minimum: 1, maximum: 65535 },
+          tlsCertId: { type: 'integer', nullable: true, description: '关联 TLS 证书 ID，null 表示纯 HTTP' },
+          routes: { type: 'array', items: { $ref: '#/components/schemas/LocationRule' } },
+          ipPolicy: { $ref: '#/components/schemas/OrpIpPolicy' },
+          errorPages: { $ref: '#/components/schemas/HttpErrorPages' },
+        },
+      },
+      HttpErrorPages: {
+        type: 'object',
+        description: '键为状态码或 状态码|Content-Type；页面正文最多 1 MB',
+        additionalProperties: { type: 'string' },
+        example: { '404': '<h1>Not found</h1>', '404|application/json': '{"error":"not found"}' },
+      },
+      HttpListenerPage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/HttpListener' } },
+          total: { type: 'integer' },
+        },
+      },
+      StreamService: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          centerId: { type: 'integer' },
+          centerName: { type: 'string' },
+          description: { type: 'string', example: 'MySQL 主从四层代理' },
+          protocol: { type: 'string', enum: ['tcp', 'udp'] },
+          listenAddress: { type: 'string', example: '0.0.0.0' },
+          listenPort: { type: 'integer', example: 3306 },
+          backends: { type: 'array', items: { type: 'string' }, example: ['mysql-cluster-01:3306'], description: '上游组名:目标端口；发布时展开组成员' },
+          createdAt: { type: 'string' },
+          ipPolicy: { $ref: '#/components/schemas/OrpIpPolicy' },
+        },
+      },
+      StreamServicePayload: {
+        type: 'object',
+        required: ['centerId', 'protocol', 'listenPort', 'backends'],
+        properties: {
+          centerId: { type: 'integer' },
+          description: { type: 'string' },
+          protocol: { type: 'string', enum: ['tcp', 'udp'] },
+          listenAddress: { type: 'string', default: '0.0.0.0' },
+          listenPort: { type: 'integer', minimum: 1, maximum: 65535 },
+          backends: { type: 'array', minItems: 1, items: { type: 'string', example: 'mysql-cluster-01:3306' }, description: '上游组名:目标端口；多组仅支持轮询和无组级原生指令' },
+          ipPolicy: { $ref: '#/components/schemas/OrpIpPolicy' },
+        },
+      },
+      StreamServicePage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/StreamService' } },
+          total: { type: 'integer' },
+        },
+      },
+      Certificate: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string', example: 'api-example-cn' },
+          domains: { type: 'string', example: 'api.example.cn' },
+          centerScope: {
+            oneOf: [
+              { type: 'string', enum: ['all'] },
+              { type: 'array', items: { type: 'integer' } },
+            ],
+            description: '适用中心范围：all 或中心 ID 数组',
+          },
+          notBefore: { type: 'string', example: '2025-12-02 00:00:00' },
+          notAfter: { type: 'string', example: '2026-12-02 23:59:59' },
+          createdAt: { type: 'string' },
+        },
+      },
+      CertificateDetail: {
+        allOf: [
+          { $ref: '#/components/schemas/Certificate' },
+          {
+            type: 'object',
+            properties: {
+              certificate: { type: 'string', description: 'PEM 公钥证书' },
+              privateKey: { type: 'string', description: 'PEM 私钥（敏感）' },
+            },
+          },
+        ],
+      },
+      CertificatePayload: {
+        type: 'object',
+        required: ['name', 'domains', 'centerScope', 'notBefore', 'notAfter', 'certificate', 'privateKey'],
+        properties: {
+          name: { type: 'string', description: '证书唯一名称' },
+          domains: { type: 'string', description: '覆盖域名（支持通配符，逗号分隔）' },
+          centerScope: {
+            oneOf: [
+              { type: 'string', enum: ['all'] },
+              { type: 'array', items: { type: 'integer' } },
+            ],
+          },
+          notBefore: { type: 'string', description: '生效时间' },
+          notAfter: { type: 'string', description: '失效时间' },
+          certificate: { type: 'string', description: 'PEM 公钥证书（必须含 BEGIN CERTIFICATE 头）' },
+          certificateChain: { type: 'string', description: '可选 PEM 证书链（中间证书，需含 BEGIN CERTIFICATE 头）' },
+          privateKey: { type: 'string', description: 'PEM 私钥；更新时留空保留原私钥（必须含 PRIVATE KEY 头）' },
+        },
+      },
+      CertificatePage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/Certificate' } },
+          total: { type: 'integer' },
+        },
+      },
+      DnsResolver: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          centerId: { type: 'integer' },
+          centerName: { type: 'string' },
+          address: { type: 'string', example: '10.60.0.11' },
+          port: { type: 'integer', example: 53 },
+          timeoutSec: { type: 'integer', example: 2 },
+          cacheTtlSec: { type: 'integer', example: 30 },
+        },
+      },
+      DnsResolverPayload: {
+        type: 'object',
+        required: ['centerId', 'address', 'port'],
+        properties: {
+          centerId: { type: 'integer' },
+          address: { type: 'string', description: '上游 DNS 地址（IP）' },
+          port: { type: 'integer', default: 53 },
+          timeoutSec: { type: 'integer', default: 2 },
+          cacheTtlSec: { type: 'integer', default: 30 },
+        },
+      },
+      DnsResolverPage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/DnsResolver' } },
+          total: { type: 'integer' },
+        },
+      },
+      OrpIpGroup: {
+        type: 'object',
+        description: 'IP 组（常用 IP / CIDR 成员集合，供三层级 IP 策略快捷导入复用）',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string', example: 'Office_Internal_Net', description: '组名称（全局唯一）' },
+          description: { type: 'string', example: '总部与分支办公内网网段' },
+          members: {
+            type: 'array',
+            items: { type: 'string', example: '192.168.0.0/16' },
+            description: '成员 IP 或 CIDR 网段列表',
+          },
+          createdAt: { type: 'string' },
+          updatedAt: { type: 'string' },
+        },
+      },
+      OrpIpGroupPayload: {
+        type: 'object',
+        required: ['name', 'members'],
+        properties: {
+          name: { type: 'string', description: '组名称（2-64 位，全局唯一）' },
+          description: { type: 'string', description: '用途说明' },
+          members: {
+            type: 'array',
+            items: { type: 'string', example: '10.0.0.0/8' },
+            description: '成员 IP / CIDR 列表（至少 1 项，逐项校验 IPv4/IPv6/CIDR 格式且不重复）',
+          },
+        },
+      },
+      OrpIpGroupPage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/OrpIpGroup' } },
+          total: { type: 'integer' },
+        },
+      },
+      UpstreamNode: {
+        type: 'object',
+        required: ['host', 'port'],
+        properties: {
+          host: { type: 'string', example: '10.60.1.11' },
+          port: { type: 'integer', example: 8080 },
+          weight: { type: 'integer', default: 1, description: '转发权重 1-100' },
+          maxFails: { type: 'integer', default: 3, description: '被动检查失败阈值 0-100' },
+          failTimeoutSec: { type: 'integer', default: 10, description: '失败窗口 1-300 秒' },
+          slowStartSec: { type: 'integer', default: 0, description: '慢启动 0-600 秒' },
+          backup: { type: 'boolean', default: false, description: '备用节点' },
+        },
+      },
+      UpstreamHealthCheck: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['none', 'tcp', 'http'], default: 'none' },
+          intervalSec: { type: 'integer', default: 5, description: '主动探测间隔 1-300 秒' },
+          path: { type: 'string', example: '/healthz', description: 'HTTP 探测路径' },
+          expectedStatus: { type: 'array', items: { type: 'integer' }, example: [200, 204], description: '期望状态码' },
+        },
+      },
+      UpstreamGroup: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          centerId: { type: 'integer' },
+          centerName: { type: 'string' },
+          name: { type: 'string', example: 'web-frontend' },
+          lbPolicy: { type: 'string', enum: ['round_robin', 'least_conn', 'ip_hash', 'hash', 'consistent_hash'] },
+          hashKey: { type: 'string', example: '$remote_addr', description: 'Hash 策略的 NGINX 变量键' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          nodes: { type: 'array', items: { $ref: '#/components/schemas/UpstreamNode' } },
+          healthCheck: { $ref: '#/components/schemas/UpstreamHealthCheck' },
+          referenced: { type: 'array', items: { type: 'string' }, description: '引用方列表（HTTP 路由 / Stream 服务）' },
+          createdAt: { type: 'string' },
+          updatedAt: { type: 'string' },
+        },
+      },
+      UpstreamGroupPayload: {
+        type: 'object',
+        required: ['centerId', 'name', 'nodes'],
+        properties: {
+          centerId: { type: 'integer' },
+          name: { type: 'string', description: '字母开头，2-63 位字母数字下划线连字符' },
+          lbPolicy: { type: 'string', enum: ['round_robin', 'least_conn', 'ip_hash', 'hash', 'consistent_hash'], default: 'round_robin' },
+          hashKey: { type: 'string', example: '$remote_addr', description: 'Hash 策略必填；仅允许 NGINX 变量组合' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          nodes: { type: 'array', items: { $ref: '#/components/schemas/UpstreamNode' }, description: '至少一个节点，且不可全部为 backup' },
+          healthCheck: { $ref: '#/components/schemas/UpstreamHealthCheck' },
+        },
+      },
+      UpstreamGroupPage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/UpstreamGroup' } },
+          total: { type: 'integer' },
+        },
+      },
+      AuditLog: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          module: { $ref: '#/components/schemas/AuditModule' },
+          action: { $ref: '#/components/schemas/AuditAction' },
+          target: { type: 'string', example: 'node:or-sh-ngx-01' },
+          detail: { type: 'string', example: '注册节点 or-sh-ngx-01（华东生产中心 / 10.60.1.15）' },
+          operator: { type: 'string', example: '系统管理员' },
+          ip: { type: 'string', example: '10.10.2.18' },
+          createdAt: { type: 'string' },
+        },
+      },
+      AuditLogPage: {
+        type: 'object',
+        properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/AuditLog' } },
+          total: { type: 'integer' },
+        },
+      },
+    },
+  },
+  security: [{ bearerAuth: [] }],
+} as const;
+
+export type OpenApiSpec = typeof openApiSpec;
+
+/** 展平后的接口操作项（供接口文档页面使用） */
+export interface OpenApiOperation {
+  description: string;
+  method: string;
+  operationId: string;
+  parameters: unknown[];
+  path: string;
+  requestBody?: Record<string, any>;
+  responses: Record<string, any>;
+  summary: string;
+  tags: string[];
+}
+
+/** 将 OpenAPI paths 展平为「一行一操作」列表 */
+export function listOpenApiOperations(): OpenApiOperation[] {
+  const list: OpenApiOperation[] = [];
+  for (const [pathKey, pathItem] of Object.entries(openApiSpec.paths)) {
+    for (const [method, op] of Object.entries(pathItem)) {
+      if (!['delete', 'get', 'patch', 'post', 'put'].includes(method)) {
+        continue;
+      }
+      const operation = op as Record<string, any>;
+      list.push({
+        description: operation.description ?? '',
+        method: method.toUpperCase(),
+        operationId: operation.operationId ?? '',
+        parameters: operation.parameters ?? [],
+        path: pathKey,
+        requestBody: operation.requestBody,
+        responses: operation.responses ?? {},
+        summary: operation.summary ?? '',
+        tags: operation.tags ?? ['通用'],
+      });
+    }
+  }
+  return list;
+}
+
+/** 全量业务分组（tags） */
+export const openApiTags: string[] = [
+  ...new Set(listOpenApiOperations().flatMap((item) => item.tags)),
+];

@@ -1,0 +1,402 @@
+package httpapi
+
+import (
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type agentHeartbeat struct {
+	NodeID string          `json:"nodeId"`
+	State  json.RawMessage `json:"state"`
+}
+
+type agentTaskResult struct {
+	TaskID      string    `json:"taskId"`
+	NodeID      string    `json:"nodeId"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	Output      string    `json:"output,omitempty"`
+	Error       string    `json:"error,omitempty"`
+}
+
+func (s *Server) authenticatedAgentNode(r *http.Request, presented string) (int64, string, error) {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return 0, "", errors.New("需要节点客户端证书")
+	}
+	cert := r.TLS.PeerCertificates[0]
+	sum := sha256.Sum256(cert.Raw)
+	fingerprint := strings.ToLower(hex.EncodeToString(sum[:]))
+	var id int64
+	var raw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT id,document FROM orp_resource WHERE kind='nodes' AND JSON_UNQUOTE(JSON_EXTRACT(document,'$.agentId'))=?", presented).Scan(&id, &raw); err != nil {
+		return 0, "", errors.New("Agent 节点未登记")
+	}
+	var node orpDocument
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return 0, "", errors.New("节点登记数据无效")
+	}
+	registered := strings.ToLower(toString(node["agentCertificateFingerprint"]))
+	if !validateAgentFingerprint(registered) || registered != fingerprint {
+		return 0, "", errors.New("节点客户端证书未登记或已撤销")
+	}
+	return id, fingerprint, nil
+}
+
+func writeAgentError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body agentHeartbeat
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" || len(body.State) == 0 || !json.Valid(body.State) || !validAgentState(body.State) {
+		writeAgentError(w, http.StatusBadRequest, errors.New("心跳请求无效"))
+		return
+	}
+	nodeID, fingerprint, err := s.authenticatedAgentNode(r, body.NodeID)
+	if err != nil {
+		writeAgentError(w, http.StatusUnauthorized, err)
+		return
+	}
+	if _, err := s.db.ExecContext(r.Context(), `INSERT INTO orp_agent_heartbeat(node_id,certificate_fingerprint,state,received_at)
+VALUES(?,?,?,NOW(6)) ON DUPLICATE KEY UPDATE certificate_fingerprint=VALUES(certificate_fingerprint),state=VALUES(state),received_at=NOW(6)`, nodeID, fingerprint, body.State); err != nil {
+		writeAgentError(w, http.StatusInternalServerError, errors.New("保存心跳失败"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) agentNextTask(w http.ResponseWriter, r *http.Request) {
+	presented := r.URL.Query().Get("nodeId")
+	nodeID, _, err := s.authenticatedAgentNode(r, presented)
+	if err != nil {
+		writeAgentError(w, http.StatusUnauthorized, err)
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeAgentError(w, 500, errors.New("领取任务失败"))
+		return
+	}
+	defer tx.Rollback()
+	var taskID, operation string
+	var issuedAt, expiresAt time.Time
+	err = tx.QueryRowContext(r.Context(), `SELECT id,operation,issued_at,expires_at FROM orp_agent_task
+WHERE node_id=? AND status='queued' AND expires_at>NOW(6) ORDER BY issued_at,id LIMIT 1 FOR UPDATE`, nodeID).Scan(&taskID, &operation, &issuedAt, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		writeAgentError(w, 500, errors.New("读取任务失败"))
+		return
+	}
+	if operation != "reload" {
+		writeAgentError(w, 500, errors.New("任务操作无效"))
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_agent_task SET status='claimed',claimed_at=NOW(6),started_at=NOW(6) WHERE id=? AND status='queued'", taskID); err != nil {
+		writeAgentError(w, 500, errors.New("领取任务失败"))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeAgentError(w, 500, errors.New("领取任务提交失败"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": taskID, "nodeId": presented, "operation": operation, "issuedAt": issuedAt.UTC(), "expiresAt": expiresAt.UTC()})
+}
+
+func (s *Server) agentTaskResult(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if _, err := uuid.Parse(taskID); err != nil {
+		writeAgentError(w, 400, errors.New("任务 ID 无效"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var result agentTaskResult
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil {
+		writeAgentError(w, 400, errors.New("任务结果无效"))
+		return
+	}
+	if result.TaskID != taskID || result.NodeID == "" || (result.Status != "succeeded" && result.Status != "failed" && result.Status != "rejected") {
+		writeAgentError(w, 400, errors.New("任务结果字段无效"))
+		return
+	}
+	nodeID, _, err := s.authenticatedAgentNode(r, result.NodeID)
+	if err != nil {
+		writeAgentError(w, 401, err)
+		return
+	}
+	output := result.Output
+	if len(output) > 4096 {
+		output = output[:4096]
+	}
+	errorText := result.Error
+	if len(errorText) > 2048 {
+		errorText = errorText[:2048]
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeAgentError(w, 500, errors.New("保存任务结果失败"))
+		return
+	}
+	defer tx.Rollback()
+	var owner int64
+	var status string
+	if err := tx.QueryRowContext(r.Context(), "SELECT node_id,status FROM orp_agent_task WHERE id=? FOR UPDATE", taskID).Scan(&owner, &status); err != nil {
+		writeAgentError(w, 404, errors.New("任务不存在"))
+		return
+	}
+	if owner != nodeID {
+		writeAgentError(w, 403, errors.New("任务不属于该节点"))
+		return
+	}
+	if status == "completed" {
+		if err := tx.Commit(); err != nil {
+			writeAgentError(w, 500, errors.New("确认重复结果失败"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if status != "claimed" {
+		writeAgentError(w, 409, errors.New("任务尚未领取或已过期"))
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `UPDATE orp_agent_task SET status='completed',completed_at=NOW(6),result_status=?,output_text=?,error_text=? WHERE id=?`, result.Status, output, errorText, taskID); err != nil {
+		writeAgentError(w, 500, errors.New("保存任务结果失败"))
+		return
+	}
+	audit, _ := json.Marshal(map[string]string{"taskId": taskID, "status": result.Status})
+	if err := orpAudit(r.Context(), tx, "agent:"+result.NodeID, "agent_task_result", "nodes", nodeID, nil, audit, orpClientIP(r)); err != nil {
+		writeAgentError(w, 500, errors.New("记录 Agent 结果审计失败"))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeAgentError(w, 500, errors.New("提交任务结果失败"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) agentReloadTaskCreate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireSuper(w, r) {
+		return
+	}
+	nodeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || nodeID < 1 {
+		orpFailure(w, 400, "节点 ID 无效")
+		return
+	}
+	var raw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT document FROM orp_resource WHERE kind='nodes' AND id=?", nodeID).Scan(&raw); err != nil {
+		orpFailure(w, 404, "节点不存在")
+		return
+	}
+	var node orpDocument
+	if err := json.Unmarshal(raw, &node); err != nil {
+		orpFailure(w, 500, "读取节点失败")
+		return
+	}
+	agentID := toString(node["agentId"])
+	fingerprint := strings.ToLower(toString(node["agentCertificateFingerprint"]))
+	if _, err := hex.DecodeString(fingerprint); err != nil || len(fingerprint) != 64 || agentID == "" {
+		orpFailure(w, 409, "节点尚未登记 Agent 身份和证书指纹")
+		return
+	}
+	var heartbeat time.Time
+	if err := s.db.QueryRowContext(r.Context(), "SELECT received_at FROM orp_agent_heartbeat WHERE node_id=? AND certificate_fingerprint=?", nodeID, fingerprint).Scan(&heartbeat); err != nil || time.Since(heartbeat) > 2*time.Minute {
+		orpFailure(w, 409, "Agent 未在线")
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建 Agent reload 任务失败")
+		return
+	}
+	defer tx.Rollback()
+	var lockedID int64
+	if err := tx.QueryRowContext(r.Context(), "SELECT id FROM orp_resource WHERE kind='nodes' AND id=? FOR UPDATE", nodeID).Scan(&lockedID); err != nil {
+		orpFailure(w, 404, "节点不存在")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_agent_task SET status='expired' WHERE node_id=? AND status IN ('queued','claimed') AND expires_at<=NOW(6)", nodeID); err != nil {
+		orpFailure(w, 500, "清理过期 Agent 任务失败")
+		return
+	}
+	var count int
+	if err := tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM orp_agent_task WHERE node_id=? AND status IN ('queued','claimed')", nodeID).Scan(&count); err != nil || count > 0 {
+		orpFailure(w, 409, "节点已有未完成 Agent 任务")
+		return
+	}
+	taskID := uuid.NewString()
+	issued, expires := time.Now().UTC(), time.Now().UTC().Add(2*time.Minute)
+	if _, err := tx.ExecContext(r.Context(), "INSERT INTO orp_agent_task(id,node_id,operation,status,issued_at,expires_at,created_by) VALUES(?,?, 'reload','queued',?,?,?)", taskID, nodeID, issued, expires, actor); err != nil {
+		orpFailure(w, 500, "创建 Agent reload 任务失败")
+		return
+	}
+	audit, _ := json.Marshal(map[string]string{"taskId": taskID, "operation": "reload"})
+	if err := orpAudit(r.Context(), tx, actor, "agent_task_create", "nodes", nodeID, nil, audit, orpClientIP(r)); err != nil {
+		orpFailure(w, 500, "记录 Agent 任务审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交 Agent reload 任务失败")
+		return
+	}
+	orpReply(w, http.StatusCreated, map[string]any{"id": taskID, "nodeId": agentID, "operation": "reload", "issuedAt": issued, "expiresAt": expires})
+}
+
+func (s *Server) agentTasksList(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.orpIdentity(w, r); !ok {
+		return
+	}
+	if !s.requireSuper(w, r) {
+		return
+	}
+	nodeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || nodeID < 1 {
+		orpFailure(w, 400, "节点 ID 无效")
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT id,operation,status,issued_at,expires_at,claimed_at,completed_at,result_status,output_text,error_text
+FROM orp_agent_task WHERE node_id=? ORDER BY issued_at DESC LIMIT 50`, nodeID)
+	if err != nil {
+		orpFailure(w, 500, "读取 Agent 任务失败")
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, operation, status string
+		var issued, expires time.Time
+		var claimed, completed sql.NullTime
+		var resultStatus, output, errorText sql.NullString
+		if err := rows.Scan(&id, &operation, &status, &issued, &expires, &claimed, &completed, &resultStatus, &output, &errorText); err != nil {
+			orpFailure(w, 500, "读取 Agent 任务失败")
+			return
+		}
+		items = append(items, map[string]any{"id": id, "operation": operation, "status": status, "issuedAt": issued.UTC(), "expiresAt": expires.UTC(), "claimedAt": nullTime(claimed), "completedAt": nullTime(completed), "resultStatus": nullString(resultStatus), "output": nullString(output), "error": nullString(errorText)})
+	}
+	if err := rows.Err(); err != nil {
+		orpFailure(w, 500, "读取 Agent 任务失败")
+		return
+	}
+	orpReply(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) agentCertificateRegister(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
+		return
+	}
+	if !s.requireSuper(w, r) {
+		return
+	}
+	nodeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || nodeID < 1 {
+		orpFailure(w, 400, "节点 ID 无效")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	var body struct {
+		NodeID                 string `json:"nodeId"`
+		CertificateFingerprint string `json:"certificateFingerprint"`
+		Revoke                 bool   `json:"revoke"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || body.NodeID == "" || (!body.Revoke && !validateAgentFingerprint(body.CertificateFingerprint)) {
+		orpFailure(w, 400, "Agent 节点 ID 或 SHA-256 证书指纹无效")
+		return
+	}
+	var raw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT document FROM orp_resource WHERE kind='nodes' AND id=?", nodeID).Scan(&raw); err != nil {
+		orpFailure(w, 404, "节点不存在")
+		return
+	}
+	var node orpDocument
+	if err := json.Unmarshal(raw, &node); err != nil {
+		orpFailure(w, 500, "节点登记数据损坏")
+		return
+	}
+	before := append([]byte(nil), raw...)
+	if existing := toString(node["agentId"]); existing != "" && existing != body.NodeID && toString(node["agentCertificateFingerprint"]) != "" {
+		orpFailure(w, 409, "已登记 Agent ID 不可更换；请先撤销旧证书后重新登记")
+		return
+	}
+	var duplicate int
+	fingerprint := strings.ToLower(body.CertificateFingerprint)
+	if !body.Revoke {
+		if err := s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM orp_resource WHERE kind='nodes' AND id<>? AND (JSON_UNQUOTE(JSON_EXTRACT(document,'$.agentId'))=? OR LOWER(JSON_UNQUOTE(JSON_EXTRACT(document,'$.agentCertificateFingerprint')))=?)", nodeID, body.NodeID, fingerprint).Scan(&duplicate); err != nil || duplicate > 0 {
+			orpFailure(w, 409, "Agent ID 或证书指纹已绑定到其他节点")
+			return
+		}
+	}
+	node["agentId"] = body.NodeID
+	if body.Revoke {
+		fingerprint = ""
+	}
+	node["agentCertificateFingerprint"] = fingerprint
+	updated, _ := json.Marshal(node)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "登记 Agent 证书失败")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_resource SET document=?,updated_at=NOW(6) WHERE kind='nodes' AND id=?", updated, nodeID); err != nil {
+		orpFailure(w, 500, "更新节点 Agent 身份失败")
+		return
+	}
+	if body.Revoke {
+		if _, err := tx.ExecContext(r.Context(), "UPDATE orp_agent_task SET status='expired' WHERE node_id=? AND status IN ('queued','claimed')", nodeID); err != nil {
+			orpFailure(w, 500, "撤销节点任务失败")
+			return
+		}
+	}
+	if err := orpAudit(r.Context(), tx, actor, "agent_certificate_register", "nodes", nodeID, before, updated, orpClientIP(r)); err != nil {
+		orpFailure(w, 500, "记录 Agent 证书审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交 Agent 证书登记失败")
+		return
+	}
+	orpReply(w, 200, map[string]any{"nodeId": nodeID, "agentId": body.NodeID, "certificateFingerprint": fingerprint, "revoked": body.Revoke})
+}
+
+func validateAgentFingerprint(value string) bool {
+	b, err := hex.DecodeString(value)
+	return err == nil && len(b) == sha256.Size
+}
+
+func validAgentState(raw json.RawMessage) bool {
+	var state struct {
+		CollectedAt      time.Time `json:"collectedAt"`
+		Hostname         string    `json:"hostname"`
+		OS               string    `json:"os"`
+		Arch             string    `json:"arch"`
+		OpenRestyVersion string    `json:"openrestyVersion"`
+		OpenRestyRunning bool      `json:"openrestyRunning"`
+		OpenRestyPID     int       `json:"openrestyPid"`
+		ConfigReadable   bool      `json:"configReadable"`
+	}
+	return json.Unmarshal(raw, &state) == nil && !state.CollectedAt.IsZero() && len(state.Hostname) <= 255 && len(state.OS) <= 64 && len(state.Arch) <= 64 && len(state.OpenRestyVersion) <= 255 && state.OpenRestyPID >= 0
+}

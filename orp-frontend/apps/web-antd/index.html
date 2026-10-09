@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="renderer" content="webkit" />
+    <meta name="description" content="A Modern Back-end Management System" />
+    <meta name="keywords" content="Vben Admin Vue3 Vite" />
+    <meta name="author" content="Vben" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=0"
+    />
+    <!-- 由 vite 注入 VITE_APP_TITLE 变量，在 .env 文件内配置 -->
+    <title>%VITE_APP_TITLE%</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico" />
+    <script>
+      try {
+        var prefKey = 'orp-web-antd-5.8.0-prod-preferences';
+        var cachedPref = localStorage.getItem(prefKey);
+        if (cachedPref) {
+          var pData = JSON.parse(cachedPref);
+          if (pData && pData.breadcrumb) {
+            pData.breadcrumb.styleType = 'background';
+            pData.breadcrumb.showIcon = false;
+            pData.breadcrumb.showHome = true;
+            pData.breadcrumb.hideOnlyOne = false;
+            localStorage.setItem(prefKey, JSON.stringify(pData));
+          }
+        }
+      } catch (e) {}
+    </script>
+    <script>
+      // 静态资源加载失败自动恢复：部署切换瞬间可能出现的 chunk 404 不再导致页面停留在加载动画
+      (function () {
+        var KEY = 'orp-asset-retry-at';
+        var COUNT = 'orp-asset-retry-count';
+        function reloadOnce() {
+          var now = Date.now();
+          var at = 0;
+          var count = 0;
+          try {
+            at = Number(sessionStorage.getItem(KEY)) || 0;
+            count = Number(sessionStorage.getItem(COUNT)) || 0;
+          } catch (e) {}
+          if (now - at < 30000 || count >= 3) return; // 30 秒窗口内只自动恢复一次，全会话最多 3 次
+          try {
+            sessionStorage.setItem(KEY, String(now));
+            sessionStorage.setItem(COUNT, String(count + 1));
+          } catch (e) {}
+          location.reload();
+        }
+        window.addEventListener(
+          'error',
+          function (event) {
+            var target = event.target;
+            if (target && target !== window) {
+              var tag = String(target.tagName || '').toUpperCase();
+              if ((tag === 'SCRIPT' || tag === 'LINK' || tag === 'IMG') && (target.src || target.href)) {
+                reloadOnce(); // 入口/预载脚本、样式、图片资源加载失败（404 等）
+              }
+              return;
+            }
+            var msg = String(event.message || '');
+            if (/dynamically imported module|error loading dynamically|Importing a module script failed/i.test(msg)) {
+              reloadOnce(); // 路由懒加载 chunk 动态 import 失败
+            }
+          },
+          true,
+        );
+      })();
+    </script>
+    <script>
+      // 生产环境下注入百度统计
+      if (window._VBEN_ADMIN_PRO_APP_CONF_) {
+        var _hmt = _hmt || [];
+        (function () {
+          var hm = document.createElement('script');
+          hm.src =
+            'https://hm.baidu.com/hm.js?b38e689f40558f20a9a686d7f6f33edf';
+          var s = document.getElementsByTagName('script')[0];
+          s.parentNode.insertBefore(hm, s);
+        })();
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

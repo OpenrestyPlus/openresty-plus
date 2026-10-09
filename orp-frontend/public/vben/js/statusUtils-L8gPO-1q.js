@@ -1,0 +1,1 @@
+import{Et as e}from"./useConfigInject-D8oIJ-oa.js";function t(t,n,r){return e({[`${t}-status-success`]:n===`success`,[`${t}-status-warning`]:n===`warning`,[`${t}-status-error`]:n===`error`,[`${t}-status-validating`]:n===`validating`,[`${t}-has-feedback`]:r})}var n=(e,t)=>t||e;export{t as n,n as t};

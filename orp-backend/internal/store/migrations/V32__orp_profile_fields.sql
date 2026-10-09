@@ -1,0 +1,2 @@
+ALTER TABLE orp_account ADD COLUMN nickname VARCHAR(128) NULL;
+ALTER TABLE orp_account ADD COLUMN gender VARCHAR(16) NULL;

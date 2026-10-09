@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS orp_resource (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  kind VARCHAR(64) NOT NULL,
+  document JSON NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  KEY idx_orp_resource_kind (kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS orp_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  actor VARCHAR(128) NOT NULL,
+  action VARCHAR(32) NOT NULL,
+  kind VARCHAR(64) NOT NULL,
+  resource_id BIGINT NOT NULL,
+  before_document JSON NULL,
+  after_document JSON NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  KEY idx_orp_audit_created (created_at),
+  KEY idx_orp_audit_resource (kind, resource_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

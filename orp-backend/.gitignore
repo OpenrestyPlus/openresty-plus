@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+runtime/
+*.mmdb
+/control-plane
+/coverage.out
+*.test

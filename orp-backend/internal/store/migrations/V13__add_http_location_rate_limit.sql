@@ -1,0 +1,5 @@
+ALTER TABLE http_location
+  ADD COLUMN rate_limit_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN rate_per_second INT NOT NULL DEFAULT 10,
+  ADD COLUMN rate_limit_burst INT NOT NULL DEFAULT 0,
+  ADD COLUMN rate_limit_nodelay BOOLEAN NOT NULL DEFAULT FALSE;

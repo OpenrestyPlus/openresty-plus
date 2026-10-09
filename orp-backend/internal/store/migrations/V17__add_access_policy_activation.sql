@@ -1,0 +1,10 @@
+ALTER TABLE http_server
+  ADD COLUMN ip_policy_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN api_policy_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE http_location
+  ADD COLUMN ip_policy_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN api_policy_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE stream_server
+  ADD COLUMN ip_policy_enabled BOOLEAN NOT NULL DEFAULT TRUE;

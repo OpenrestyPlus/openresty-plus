@@ -1,0 +1,1 @@
+import{gr as e,zn as t}from"../jse/index-index-4D6gZF6U.js";var n=()=>{let n=e(new Map);return t(()=>{n.value=new Map}),[e=>t=>{n.value.set(e,t)},n]};export{n as t};
