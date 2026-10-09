@@ -15,8 +15,9 @@ import { useAuthStore } from '#/store';
 defineOptions({ name: 'Login' });
 
 const authStore = useAuthStore();
-const defaultCredentials = import.meta.env.DEV
-  ? { username: 'vben', password: import.meta.env.VITE_LOCAL_DEV_PASSWORD || '' }
+const localDevPassword = import.meta.env.VITE_LOCAL_DEV_PASSWORD || '';
+const defaultCredentials = import.meta.env.DEV || localDevPassword
+  ? { username: 'vben', password: localDevPassword }
   : { username: '', password: '' };
 
 onMounted(() => {

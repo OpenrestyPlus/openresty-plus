@@ -11,7 +11,7 @@ import (
 // static contains the source placeholder and the generated frontend under
 // static/dist when the release build script runs.
 //
-//go:embed static
+//go:embed all:static
 var static embed.FS
 
 // Handler serves the embedded frontend and falls back to index.html for
@@ -38,7 +38,7 @@ func Handler() http.Handler {
 			return
 		}
 		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
-		if name == "." {
+		if name == "" || name == "." {
 			name = "index.html"
 		}
 		if file, err := frontend.Open(name); err == nil {
