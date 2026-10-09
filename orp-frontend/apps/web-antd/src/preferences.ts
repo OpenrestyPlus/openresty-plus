@@ -61,9 +61,8 @@ export const overridesPreferences = defineOverridesPreferences({
   },
   logo: {
     enable: true,
-    // 1x1 透明占位图：隐藏默认 logo 图片，仅保留文字品牌
-    source:
-      'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+    source: '/orp-logo-dark.svg',
+    sourceDark: '/orp-logo.svg',
   },
   theme: {
     builtinType: 'violet',
