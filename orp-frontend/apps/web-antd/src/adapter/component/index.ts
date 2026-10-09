@@ -726,7 +726,9 @@ async function initComponentAdapter() {
     }),
     Space,
     Switch,
-    Textarea: withDefaultPlaceholder(Textarea, 'input'),
+    Textarea: withDefaultPlaceholder(Textarea, 'input', {
+      style: { width: '100%' },
+    }),
     TimePicker,
     TreeSelect: withDefaultPlaceholder(TreeSelect, 'select', {
       style: { width: '100%' },

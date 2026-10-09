@@ -57,12 +57,15 @@ const [Form, formApi] = useVbenForm({
       },
       fieldName: 'description',
       label: '备注描述',
+      labelClass: 'w-[100px] min-w-[100px]',
+      wrapperClass: 'w-full',
     },
     {
       component: 'InputNumber',
       componentProps: { min: -90, max: 90, precision: 6, placeholder: '例如：31.2304', style: { width: '100%' } },
       fieldName: 'latitude',
       help: '与经度同时填写后，大屏可标出该中心位置',
+      labelClass: 'whitespace-nowrap',
       label: '纬度（可选）',
     },
     {
