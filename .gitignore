@@ -1,0 +1,16 @@
+# Local configuration and runtime state
+.env
+.env.*
+!.env.example
+.DS_Store
+/runtime/
+
+# Dependency and build caches
+node_modules/
+**/node_modules/
+.turbo/
+**/.turbo/
+dist/
+**/dist/
+coverage/
+**/coverage/

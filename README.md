@@ -44,7 +44,7 @@ cd orp-backend
 ./dev.sh
 ```
 
-该脚本会从工作区根目录读取 `.env`，启动本地 MySQL、Redis、Kafka 及控制面，并启动 `orp-frontend/` 中的 Vite。请先在仓库根目录准备 `.env`（可参考 `orp-backend/.env.example`），并安装 Docker Compose、Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。无需完整联调时，可按上面的步骤分别启动后端和前端。
+该脚本会从仓库根目录读取 `.env`，启动本地 MySQL、Redis、Kafka 及控制面，并启动 `orp-frontend/` 中的 Vite。首次启动前，请在仓库根目录执行 `cp .env.example .env` 并填写配置。仓库根目录的 `.env.example` 提供联调配置模板，后端服务变量说明见 `orp-backend/.env.example`。还需安装 Docker Compose、Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。无需完整联调时，可按上面的步骤分别启动后端和前端。
 
 ## 文档与许可
 
