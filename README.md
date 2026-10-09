@@ -1,63 +1,55 @@
 # OpenResty Plus
 
-OpenResty Plus 是 OpenResty 集群管理平台。后端和前端源码分别保存在 `orp-backend/` 与 `orp-frontend/`，发布时先编译 Vue 管理界面，再将静态资源嵌入 Go 程序，最终交付一个同时提供管理界面和 API 的可执行文件。
+OpenResty Plus 是 OpenResty 集群管理平台。前端和后端源码分别位于 `orp-frontend/` 与 `orp-backend/`；构建时会把 Vue 管理界面嵌入 Go 服务，生成一个同时提供管理页面和 API 的可执行文件。此仓库负责编译单体程序和制作它的 Docker 镜像。OpenResty 节点、Filebeat 及本地演示环境由独立的 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart) 仓库管理。
 
-## 构建单文件程序
+## 编译可执行文件
 
-构建环境要求：Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。首次构建会自动安装前端依赖；完成后运行：
+构建环境要求：Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。首次构建会自动安装前端依赖：
 
 ```sh
 ./build.sh
 ```
 
-生成的程序位于 `dist/openresty-plus`。发布时只需复制这个可执行文件和配置文件；前端页面已嵌入程序，无需单独部署静态文件。
-默认生成当前操作系统和 CPU 架构的程序。为 Linux x86-64 服务器构建时使用 `GOOS=linux GOARCH=amd64 ./build.sh`；ARM64 Linux 可使用 `GOOS=linux GOARCH=arm64 ./build.sh`。
-
-## 配置及启动
-
-在仓库根目录创建本地配置并填写数据库、管理员密码和数据加密密钥：
+生成 `dist/openresty-plus`。默认目标为当前操作系统和 CPU 架构；Linux x86-64 和 ARM64 可分别执行：
 
 ```sh
-cp .env.example .env
+GOOS=linux GOARCH=amd64 ./build.sh
+GOOS=linux GOARCH=arm64 ./build.sh
 ```
 
-程序启动时会自动读取当前目录的 `.env`。MySQL 是必需的外部服务；Redis 和 Kafka 不可用时，控制面仍可启动，但相关缓存或日志能力会降级。可用仓库中的 Compose 启动本地依赖：
+## 制作 Docker 镜像
+
+仓库根目录中的 Dockerfile 会先编译管理界面，再编译并嵌入 Go 服务：
 
 ```sh
-docker compose --env-file .env -f orp-backend/docker-compose.yaml --project-directory orp-backend up -d mysql redis kafka
+docker build -f deploy/Dockerfile -t openresty-plus:local .
 ```
 
-使用同一个可执行文件管理服务：
+镜像默认以前台方式运行单体程序，监听 `:8081`。GitLab CI 会在 `beta` 分支发布 Beta 镜像和二进制；符合 `vX.Y.Z` 或 `vX.Y.Z-beta.N` 格式的标签会发布版本镜像并创建 Release，Release 提供 Linux x86-64 可执行文件下载。
+
+## 程序运维命令
+
+从后端示例配置复制 `.env` 到仓库根目录，并设置数据库、管理员密码和数据加密密钥，然后可以使用以下命令管理本机进程：
 
 ```sh
+cp orp-backend/.env.example .env
 ./dist/openresty-plus start       # 后台启动
 ./dist/openresty-plus status      # 查看状态
-./dist/openresty-plus logs -f     # 实时查看日志
+./dist/openresty-plus logs -f     # 持续查看日志
 ./dist/openresty-plus restart     # 重启
 ./dist/openresty-plus stop        # 优雅停止
 ./dist/openresty-plus version     # 查看版本
 ```
 
-默认监听 `:8081`，打开 <http://127.0.0.1:8081> 访问管理界面。前台运行可使用 `./dist/openresty-plus run`，适合由 systemd、容器等进程管理器托管。PID 文件和日志默认写入仓库根目录的 `runtime/`；设置 `OPENRESTY_STATE_DIR` 可指定其他目录。
+`./dist/openresty-plus run` 会以前台方式运行，适合交给 systemd 或容器运行时管理。默认监听 `:8081`，PID 文件和日志写入 `runtime/`；可用 `OPENRESTY_STATE_DIR` 更改状态目录。数据库和演示环境的启动说明见 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart)。
 
-## 源码开发
-
-单独启动前端开发服务器：
-
-```sh
-cd orp-frontend
-pnpm install --frozen-lockfile
-pnpm --filter @vben/web-antd dev
-```
-
-后端单独启动、环境变量和数据库迁移说明见 [`orp-backend/PROJECT.md`](orp-backend/PROJECT.md)。本地多节点 Compose 部署和其他平台文档见 [`orp-backend/deploy/README.md`](orp-backend/deploy/README.md) 与 [`orp-backend/docs/`](orp-backend/docs/)；前端文档见 [`orp-frontend/PROJECT.md`](orp-frontend/PROJECT.md)。
-
-## 项目结构与许可
+## 目录
 
 ```text
 .
-├── orp-backend/    # Go 控制面及部署文件
-└── orp-frontend/   # Vue 管理控制台和 pnpm 工作区
+├── deploy/Dockerfile   # 编译前后端单体程序并制作应用镜像
+├── orp-backend/        # Go 控制面源码
+└── orp-frontend/       # Vue 管理控制台
 ```
 
-仓库许可证见 [`LICENSE`](LICENSE)。
+许可证见 [`LICENSE`](LICENSE)。

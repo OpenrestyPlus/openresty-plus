@@ -1,0 +1,8 @@
+.git
+**/.env
+**/.env.*
+!orp-frontend/apps/web-antd/.env.example
+**/node_modules
+**/dist
+orp-backend/runtime
+runtime

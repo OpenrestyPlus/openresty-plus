@@ -3,9 +3,9 @@ set -euo pipefail
 
 backend_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_root="$(cd "$backend_dir/.." && pwd)"
-env_file="$backend_dir/.env"
+env_file=${OPENRESTY_ENV_FILE:-"$backend_dir/.env"}
 runtime_dir="$backend_dir/runtime/dev"
-if [[ ! -f "$env_file" && -f "$workspace_root/.env" ]]; then
+if [[ -z "${OPENRESTY_ENV_FILE:-}" && ! -f "$env_file" && -f "$workspace_root/.env" ]]; then
   env_file="$workspace_root/.env"
   runtime_dir="$workspace_root/runtime/dev"
 fi
@@ -46,7 +46,7 @@ if [[ -z "${OPENRESTY_DATA_KEY:-}" && -r "$runtime_dir/data-key" ]]; then
 fi
 
 if [[ -z "${OPENRESTY_ADMIN_PASSWORD:-}" || -z "${OPENRESTY_DATA_KEY:-}" ]]; then
-  printf '缺少 OPENRESTY_ADMIN_PASSWORD 或 OPENRESTY_DATA_KEY；先从后端项目目录运行 ./dev.sh 初始化本地密钥。\n' >&2
+  printf '缺少 OPENRESTY_ADMIN_PASSWORD 或 OPENRESTY_DATA_KEY；请先在 orp-quickstart 初始化 .env，再通过 OPENRESTY_ENV_FILE 指定配置文件。\n' >&2
   exit 1
 fi
 

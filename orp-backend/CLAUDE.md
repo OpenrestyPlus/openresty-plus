@@ -2,14 +2,14 @@
 
 ## 项目概述
 
-本目录是独立的 Go 控制面项目，同时保存后端部署资产、平台文档和本地 Compose 集成环境。前端和节点 Agent 分别维护在相邻的独立项目目录中。
+本目录保存 Go 控制面源码和平台文档。前端源码位于同一 monorepo 的 `orp-frontend/`；应用单体构建由仓库根目录负责，本地 Compose 演示环境由独立的 `orp-quickstart` 仓库维护。
 
 ## 开发环境
 
 - Go：1.26.1
 - Node：22.18+ 或 24+
 - pnpm：11.16.0
-- Docker Compose：本地 MySQL、Redis、Kafka 与联调节点
+- Docker Compose：从独立 `orp-quickstart` 仓库启动本地 MySQL、Redis、Kafka 与演示节点
 
 ## 常用命令
 
@@ -21,7 +21,7 @@ go test ./...
 go run ./cmd/control-plane
 ```
 
-控制面默认监听 `:8081`，数据库连接通过 `OPENRESTY_DB_*` 环境变量配置。平台级 Compose 文件位于本项目根目录。
+控制面默认监听 `:8081`，数据库连接通过 `OPENRESTY_DB_*` 环境变量配置。单体构建入口是仓库根目录 `build.sh` 和 `deploy/Dockerfile`。
 
 ### 前端
 
@@ -35,14 +35,9 @@ pnpm -F @vben/web-antd run typecheck
 
 开发服务器将 `/api` 代理到 `http://127.0.0.1:8081`。
 
-### Docker Compose 联调
+### 本地联调
 
-```bash
-cp .env.example .env
-docker compose up -d mysql redis kafka
-```
-
-多项目完整联调从本项目目录运行 `./dev.sh`。本项目 Compose 提供 MySQL、Redis、Kafka、三个 OpenResty 节点和 Filebeat。
+中间件、OpenResty 演示节点及 Filebeat 的 Compose 配置位于独立的 `orp-quickstart` 仓库。请从该仓库按 README 启动；本项目目录只包含 Go 控制面源码。
 
 ## 后端结构
 

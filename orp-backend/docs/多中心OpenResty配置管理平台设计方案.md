@@ -4,7 +4,7 @@
 > 适用目标：多中心、多节点的 HTTP/HTTPS 与 TCP/UDP 配置集中管理
 > 当前实现原则：MySQL 保存结构化配置、版本快照和审计，Go 控制面编排发布，Vue Web 提供图形化管理，OpenResty Lua 承载可热更新运行时规则，Control API 负责原生配置 reload；生产运行时不依赖 AI。
 
-> 文档状态说明：本文保留了项目早期 Git/SSH 方案的设计推演，当前代码已切换为 MySQL 运行时配置。实际开发和部署以 `../README.md`、`CONTEXT.md`、ADR-0011 及当前 `../docker-compose.yaml` 为准。
+> 文档状态说明：本文保留了项目早期 Git/SSH 方案的设计推演，当前代码已切换为 MySQL 运行时配置。实际开发以 `../README.md`、`CONTEXT.md` 和 ADR-0011 为准；本地 OpenResty 联调环境由独立的 `orp-quickstart` 仓库维护。
 
 ## 1. 执行摘要
 

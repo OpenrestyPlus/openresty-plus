@@ -94,13 +94,13 @@ MySQL 和 Redis 仅作为外置开发依赖通过环境变量或本地未提交�
 
 ### 工程命名
 
-工作区内三个独立项目目录分别为 `orp-backend`、`orp-frontend` 和 `orp-node-agent`；部署文件位于 `orp-backend/deploy`，运行时渲染目录为 `runtime/native-config`。Go 模块名为 `net.daoke/orp-backend`，本地服务标识为 `openresty-plus-control-plane`。
+工作区内项目目录分别为 `orp-backend`、`orp-frontend` 和 `orp-node-agent`；单体应用镜像定义位于仓库根目录 `deploy/Dockerfile`，OpenResty 与 Filebeat 演示镜像位于独立的 `orp-quickstart/deploy` 仓库。Go 模块名为 `net.daoke/orp-backend`，本地服务标识为 `openresty-plus-control-plane`。
 
 前端项目为 `orp-frontend`，固定使用 Vben Admin `v5.7.0` 基线；Node 与 pnpm 版本以 `orp-frontend/PROJECT.md` 为准。
 
 ### 后端构建
 
-Go 控制面使用 Go 1.26、`go test ./...` 和 `go vet ./...`；Docker 镜像由 `orp-backend/Dockerfile` 构建。
+Go 控制面使用 Go 1.26、`go test ./...` 和 `go vet ./...`；单体应用镜像由仓库根目录的 `deploy/Dockerfile` 构建。
 
 ### 后端版本基线
 
