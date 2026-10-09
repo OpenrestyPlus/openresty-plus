@@ -25,7 +25,7 @@ GOOS=linux GOARCH=arm64 ./build.sh
 docker build -f deploy/Dockerfile -t openresty-plus:local .
 ```
 
-镜像默认以前台方式运行单体程序，监听 `:8081`。GitLab CI 会在 `beta` 分支发布 Beta 镜像和二进制；符合 `vX.Y.Z` 或 `vX.Y.Z-beta.N` 格式的标签会发布版本镜像并创建 Release，Release 提供 Linux x86-64 可执行文件下载。
+镜像默认以前台方式运行单体程序，监听 `:8081`。GitLab CI 会在 `beta` 分支发布 Beta 镜像和二进制；符合 `vX.Y.Z` 或 `vX.Y.Z-beta.N` 格式的标签会发布版本镜像并创建 Release。GitHub Release 工作流会为 Linux、macOS、Windows 的 x86-64 和 ARM64 构建独立压缩包，并生成 SHA-256 校验文件。
 
 ## 程序运维命令
 

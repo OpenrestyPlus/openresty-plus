@@ -1,0 +1,101 @@
+name: Cross-platform release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and update
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.21.0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+      - name: Build embedded application
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          BUILD_VERSION: ${{ inputs.tag || github.ref_name }}
+          BUILD_COMMIT: ${{ github.sha }}
+        run: ./build.sh
+      - name: Package executable
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          package_name="openresty-plus-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+          extension=""
+          if [ "$GOOS" = "windows" ]; then extension=".exe"; fi
+          temporary_directory=$(mktemp -d)
+          trap 'rm -rf "$temporary_directory"' EXIT
+          cp dist/openresty-plus "$temporary_directory/${package_name}${extension}"
+          mkdir -p dist/release
+          zip -j "dist/release/${package_name}.zip" "$temporary_directory/${package_name}${extension}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/release/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub release assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum *.zip > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-beta.') }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: dist/*

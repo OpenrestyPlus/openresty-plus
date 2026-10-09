@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -198,7 +197,7 @@ func startService() error {
 	command := exec.Command(executable, runCommand, "--run-id="+token)
 	command.Stdout = logFile
 	command.Stderr = logFile
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDaemonProcess(command)
 	if err := command.Start(); err != nil {
 		_ = logFile.Close()
 		return fmt.Errorf("start service process: %w", err)
@@ -263,7 +262,7 @@ func stopService() error {
 		fmt.Printf("%s 已停止（清理过期 PID 文件）\n", serviceName)
 		return nil
 	}
-	if err := syscall.Kill(record.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := stopProcess(record.PID); err != nil {
 		return fmt.Errorf("send stop signal to PID %d: %w", record.PID, err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
@@ -307,15 +306,7 @@ func showLogs(args []string) error {
 	if _, err := os.Stat(logPath); err != nil {
 		return fmt.Errorf("日志文件不存在：%s", logPath)
 	}
-	tailArgs := []string{"-n", "100"}
-	if len(args) == 1 {
-		tailArgs = append(tailArgs, "-f")
-	}
-	tailArgs = append(tailArgs, logPath)
-	command := exec.Command("tail", tailArgs...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	return command.Run()
+	return showLogsOS(logPath, len(args) == 1)
 }
 
 func readPID(path string) (pidRecord, error) {
@@ -334,15 +325,7 @@ func readPID(path string) (pidRecord, error) {
 }
 
 func processMatches(record pidRecord) bool {
-	if !processIDExists(record.PID) {
-		return false
-	}
-	output, err := exec.Command("ps", "-p", strconv.Itoa(record.PID), "-o", "command=").Output()
-	return err == nil && strings.Contains(string(output), "--run-id="+record.Token)
-}
-
-func processIDExists(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+	return processMatchesOS(record)
 }
 
 func removePIDFile(path, token string) {
